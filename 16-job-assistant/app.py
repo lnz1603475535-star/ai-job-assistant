@@ -23,10 +23,7 @@ from resume_engine import parse_user_info
 # 常量
 # ============================================================
 
-SAMPLE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)),
-    "08-rag-foundation", "data"
-)
+SAMPLE_DIR = os.path.join(os.path.dirname(__file__), "samples")
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 EXP_BANK_PATH = os.path.join(DATA_DIR, "experience_bank.md")
 

@@ -19,11 +19,8 @@ from resume_engine import (
 from core import load_and_index_documents, set_vectorstore
 from workflow import run_workflow
 
-# 使用 08-rag-foundation/data/ 下的样例文件
-SAMPLE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)),
-    "08-rag-foundation", "data"
-)
+# 使用项目自带的样例文件
+SAMPLE_DIR = os.path.join(os.path.dirname(__file__), "samples")
 
 # 用户经验库
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
