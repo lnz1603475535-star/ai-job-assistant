@@ -90,14 +90,27 @@ def initialize_session_state():
         st.session_state.exp_bank_content = load_experience_bank()
 
 
-def save_uploaded_file(uploaded_file) -> str:
-    """保存上传文件到临时目录，返回路径。"""
+def save_uploaded_file(uploaded_file) -> tuple[str, str | None]:
+    """保存上传文件到临时目录，返回 (路径, 错误消息)。
+    成功时路径有效、错误为 None；失败时路径为空、错误为用户可读的提示。
+    """
+    try:
+        content = uploaded_file.getvalue().decode("utf-8")
+    except UnicodeDecodeError:
+        return "", "文件编码不支持，请保存为 UTF-8 编码的 .txt 文件后重新上传。"
+
+    if not content.strip():
+        return "", "文件内容为空，请检查后重新上传。"
+
     suffix = os.path.splitext(uploaded_file.name)[1] or ".txt"
     path = os.path.join(tempfile.gettempdir(), f"resume_{uuid.uuid4().hex[:8]}{suffix}")
-    content = uploaded_file.getvalue().decode("utf-8")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return path
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except (OSError, PermissionError):
+        return "", "文件保存失败，请检查磁盘空间或临时目录权限后重试。"
+
+    return path, None
 
 
 def validate_current_step() -> bool:
@@ -244,11 +257,16 @@ def step_1_resume():
     if source == "📁 上传文件":
         uploaded = st.file_uploader("上传简历 (.txt)", type=["txt"], key="step1_uploader")
         if uploaded:
-            path = save_uploaded_file(uploaded)
-            st.session_state.resume_path = path
-            st.session_state.resume_name = uploaded.name
-            st.session_state.docs_indexed = False
-            st.toast(f"✅ 已上传：{uploaded.name}")
+            path, error = save_uploaded_file(uploaded)
+            if error:
+                st.error(f"❌ {error}")
+                st.session_state.resume_path = None
+                st.session_state.resume_name = None
+            else:
+                st.session_state.resume_path = path
+                st.session_state.resume_name = uploaded.name
+                st.session_state.docs_indexed = False
+                st.toast(f"✅ 已上传：{uploaded.name}")
     else:
         labels = [r["label"] for r in AVAILABLE_RESUMES]
         choice = st.selectbox("选择样例简历", labels, key="step1_sample_select")
@@ -291,11 +309,16 @@ def step_2_jd():
     if source == "📁 上传文件":
         uploaded = st.file_uploader("上传 JD (.txt)", type=["txt"], key="step2_uploader")
         if uploaded:
-            path = save_uploaded_file(uploaded)
-            st.session_state.jd_path = path
-            st.session_state.jd_name = uploaded.name
-            st.session_state.docs_indexed = False
-            st.toast(f"✅ 已上传：{uploaded.name}")
+            path, error = save_uploaded_file(uploaded)
+            if error:
+                st.error(f"❌ {error}")
+                st.session_state.jd_path = None
+                st.session_state.jd_name = None
+            else:
+                st.session_state.jd_path = path
+                st.session_state.jd_name = uploaded.name
+                st.session_state.docs_indexed = False
+                st.toast(f"✅ 已上传：{uploaded.name}")
     else:
         labels = [j["label"] for j in AVAILABLE_JDS]
         choice = st.selectbox("选择样例 JD", labels, key="step2_sample_select")
@@ -340,16 +363,25 @@ def step_3_user_info():
     with st.expander("💡 参考写法（点击展开）"):
         st.code(USER_TEXT_EXAMPLE, language=None)
 
+    # 输入量提示
+    char_count = len(user_text.strip())
+    if char_count == 0:
+        pass  # 刚进入页面，不打扰
+    elif char_count < 20:
+        st.caption(f"📝 已输入 {char_count} 字，还差 {20 - char_count} 字即可预览解析结果")
+
     # 解析预览
-    if len(user_text.strip()) >= 20:
+    if char_count >= 20:
         if st.button("🔍 预览解析结果"):
             with st.spinner("正在解析..."):
                 try:
                     profile = parse_user_info(user_text)
                     st.session_state.user_parsed = profile
+                    if not profile.name and not profile.skills:
+                        st.warning("未识别到姓名和技能，建议补充更多描述后再试。")
                 except Exception:
                     st.session_state.user_parsed = None
-                    st.warning("解析失败，但不影响后续生成")
+                    st.warning("解析失败，请检查输入内容后重试。这不影响后续生成，但建议至少包含姓名和技能信息。")
 
         if st.session_state.user_parsed:
             profile = st.session_state.user_parsed
