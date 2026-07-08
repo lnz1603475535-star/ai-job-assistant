@@ -1,0 +1,22 @@
+张三
+联系方式：zhangsan@email.com | 13800001111
+
+工作经历：
+- 2022-2025 某互联网公司 Python后端开发工程师
+  负责电商平台订单系统开发，使用 Django + DRF 构建 REST API
+  参与微服务拆分项目，将单体应用拆分为 5 个独立服务
+  使用 Docker 容器化部署，K8s 编排管理
+  熟悉 MySQL、Redis 缓存策略，优化过慢查询
+
+- 2020-2022 某创业公司 全栈开发
+  使用 Python Flask + Vue.js 开发商城系统
+  负责数据库设计和前后端联调
+
+技能：
+- Python / Django / FastAPI / Flask
+- Docker / Kubernetes
+- MySQL / Redis / MongoDB
+- Git / CI/CD / Linux
+
+学历：
+南京大学 计算机科学与技术 本科 2016-2020

@@ -1,0 +1,34 @@
+李四
+联系方式：lisi@email.com | 13900002222
+GitHub：github.com/lisi
+技术博客：lisi.dev
+
+教育背景：
+- 2014-2018 浙江大学 计算机科学与技术 本科
+
+工作经历：
+- 2020-2025 某独角兽公司 高级前端工程师
+  负责公司 SaaS 平台前端架构，使用 React18 + TypeScript 重构了旧系统
+  搭建了公司内部 UI 组件库（30+ 组件），被 5 个团队使用
+  主导了前端性能优化项目，首屏加载时间从 4.2s 降到 1.1s
+  推动团队引入 E2E 测试，代码覆盖率从 20% 提升到 85%
+
+- 2018-2020 某创业公司 前端开发工程师
+  使用 Vue2 开发了公司核心产品的前端部分
+  参与微信小程序和 H5 跨端开发
+
+项目经验：
+- lowcode-editor：开源低代码搭建平台（GitHub 2k+ stars）
+  基于 React + TypeScript + Canvas 实现拖拽式页面搭建
+- personal-blog：个人技术博客
+  使用 Next.js 搭建，月均 PV 5000+
+
+技能标签：
+- 精通：React18、TypeScript、Next.js、Vue3
+- 熟练：Node.js、Webpack/Vite、Docker 基础使用
+- 了解：Python、Go、AWS 基础
+
+自我评价：
+热爱技术分享，在掘金发表 30+ 篇前端技术文章。
+善于团队协作，有带 3 人小组的经验。
+期望薪资 40k+。
