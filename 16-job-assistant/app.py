@@ -598,8 +598,12 @@ def render_sidebar():
                 st.session_state.exp_bank_content = edited
                 st.session_state.docs_indexed = False
                 st.toast("✅ 经验库已保存")
-            except Exception as e:
-                st.error(f"保存失败：{e}")
+            except PermissionError:
+                st.error("保存失败：文件被占用或没有写入权限，请关闭其他程序后重试。")
+            except OSError:
+                st.error("保存失败：磁盘空间不足或文件系统错误，请检查后重试。")
+            except Exception:
+                st.error(f"保存失败：{str(e)[:150]}")
 
         st.divider()
 
@@ -641,7 +645,15 @@ def render_sidebar():
                         ])
                         st.session_state.ai_extract_result = response.content
                     except Exception as e:
-                        st.error(f"提取失败：{e}")
+                        error_str = str(e).lower()
+                        if "timeout" in error_str or "timed out" in error_str:
+                            st.error("AI 提取超时，请检查网络后重试。")
+                        elif "rate limit" in error_str or "too many" in error_str:
+                            st.warning("请求过于频繁，请稍等片刻后重试。")
+                        elif "connect" in error_str or "network" in error_str:
+                            st.error("无法连接到 AI 服务，请检查网络连接。")
+                        else:
+                            st.error(f"提取失败：{str(e)[:150]}")
 
         # 确认追加（用 st.text 避免溢出）
         if st.session_state.ai_extract_result:
@@ -662,8 +674,12 @@ def render_sidebar():
                         st.session_state.ai_extract_result = None
                         st.toast("✅ 已追加到经验库！")
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"写入失败：{e}")
+                    except PermissionError:
+                        st.error("写入失败：文件被占用或没有写入权限，请关闭其他程序后重试。")
+                    except OSError:
+                        st.error("写入失败：磁盘空间不足或文件系统错误，请检查后重试。")
+                    except Exception:
+                        st.error(f"写入失败：{str(e)[:150]}")
             with c2:
                 if st.button("❌ 取消", use_container_width=True):
                     st.session_state.ai_extract_result = None
