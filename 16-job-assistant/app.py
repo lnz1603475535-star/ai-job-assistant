@@ -665,7 +665,7 @@ def render_sidebar():
 
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("✅ 确认追加", type="primary", use_container_width=True):
+                if st.button("✅ 确认", type="primary", use_container_width=True):
                     try:
                         with open(EXP_BANK_PATH, "a", encoding="utf-8") as f:
                             f.write(f"\n\n{st.session_state.ai_extract_result}")
