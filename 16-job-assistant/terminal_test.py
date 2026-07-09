@@ -74,7 +74,7 @@ def test_full_pipeline():
     for exp in user.experience:
         print(f"    - {exp.title} @ {exp.company} ({exp.duration})")
         for ach in exp.achievements:
-            print(f"      · {ach[:60]}...")
+            print(f"      - {ach[:60]}...")
     print(f"  教育背景：{user.education}")
 
     # ── 第 2 步：提取风格 ──

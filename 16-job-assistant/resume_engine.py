@@ -9,8 +9,6 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain.agents import create_agent
 
-from langchain_community.document_loaders import TextLoader
-
 from models import UserProfile, StyleProfile, JDRequirements
 from prompts import (
     USER_INFO_PARSE_PROMPT,
@@ -19,7 +17,7 @@ from prompts import (
     BASE_RESUME_PROMPT,
     JD_CUSTOMIZE_PROMPT,
 )
-from core import llm, search_documents
+from core import llm, search_documents, load_file_content
 
 
 # ============================================================
@@ -68,7 +66,7 @@ def extract_style(sample_path: str) -> StyleProfile:
     返回：
         StyleProfile 结构化对象
     """
-    resume_text = TextLoader(sample_path, encoding="utf-8").load()[0].page_content
+    resume_text = load_file_content(sample_path)
 
     parser = PydanticOutputParser(pydantic_object=StyleProfile)
     prompt = STYLE_EXTRACTION_PROMPT.partial(
@@ -100,7 +98,7 @@ def extract_jd_requirements(jd_path: str) -> JDRequirements:
     返回：
         JDRequirements 结构化对象
     """
-    jd_text = TextLoader(jd_path, encoding="utf-8").load()[0].page_content
+    jd_text = load_file_content(jd_path)
 
     parser = PydanticOutputParser(pydantic_object=JDRequirements)
     prompt = JD_REQUIREMENTS_PROMPT.partial(
@@ -145,7 +143,8 @@ def generate_base_resume(user: UserProfile, style: StyleProfile) -> str:
 # 5. JD 定制优化
 # ============================================================
 
-def customize_for_jd(base_resume: str, jd_reqs: JDRequirements) -> str:
+def customize_for_jd(base_resume: str, jd_reqs: JDRequirements,
+                     token_warning: str = "") -> str:
     """根据 JD 要求定制简历。
 
     技术：使用 create_agent + search_documents tool。
@@ -156,20 +155,26 @@ def customize_for_jd(base_resume: str, jd_reqs: JDRequirements) -> str:
     参数：
         base_resume：generate_base_resume 生成的基础简历（Markdown）
         jd_reqs：extract_jd_requirements 提取的 JD 结构化要求
+        token_warning：Token 预算警告文本（空字符串表示预算充足）
     返回：
         定制后的 Markdown 格式简历
     """
-    agent = create_agent(
-        model=llm,
-        tools=[search_documents],
-        system_prompt="""你是一个简历优化专家。根据 JD 要求优化简历。
+    system_prompt = (
+        (token_warning + "\n\n") if token_warning else ""
+    ) + """你是一个简历优化专家。根据 JD 要求优化简历。
 
 规则：
 1. 使用 search_documents 查找用户经历中与 JD 相关的细节
-2. 绝对不编造用户没有的经历或技能
-3. 将 JD 关键词自然地融入已有经历的描述中
+2. 绝对不编造用户没有的经历或技能——严禁修改公司名称、时间、职位等事实信息
+3. 将 JD 关键词自然地融入已有经历的描述中，不堆砌
 4. 调整措辞使经历听起来更贴合 JD 要求
-5. 输出优化后的完整简历（Markdown 格式）""",
+5. 输出格式与输入简历的 Markdown 结构保持一致
+6. 输出优化后的完整简历（Markdown 格式），不要输出解释性文字"""
+
+    agent = create_agent(
+        model=llm,
+        tools=[search_documents],
+        system_prompt=system_prompt,
     )
 
     result = agent.invoke({

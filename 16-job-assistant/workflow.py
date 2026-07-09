@@ -13,6 +13,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
 from models import UserProfile, StyleProfile, JDRequirements
+from core import TokenBudget
 from resume_engine import (
     parse_user_info,
     extract_style,
@@ -37,14 +38,14 @@ class WorkflowState(TypedDict, total=False):
     jd_requirements: JDRequirements
     base_resume: str
     customized_resume: str
-    errors: list  # 不用 operator.add：每次 node_validate_inputs 返回全新错误列表，覆盖旧值
+    errors: list[str]  # 不用 operator.add：每次 node_validate_inputs 返回全新错误列表，覆盖旧值
 
 
 # ============================================================
 # 节点
 # ============================================================
 
-def node_validate_inputs(state: WorkflowState) -> dict:
+def node_validate_inputs(state: WorkflowState) -> dict[str, object]:
     """节点 1：验证输入。"""
     errors = []
 
@@ -63,25 +64,25 @@ def node_validate_inputs(state: WorkflowState) -> dict:
     return {"errors": errors}
 
 
-def node_extract_style(state: WorkflowState) -> dict:
+def node_extract_style(state: WorkflowState) -> dict[str, object]:
     """节点 2：提取样本简历风格。"""
     result = extract_style(state["sample_resume_path"])
     return {"style_profile": result}
 
 
-def node_parse_user(state: WorkflowState) -> dict:
+def node_parse_user(state: WorkflowState) -> dict[str, object]:
     """节点 3：解析用户信息。"""
     result = parse_user_info(state["user_text"])
     return {"user_profile": result}
 
 
-def node_extract_jd(state: WorkflowState) -> dict:
+def node_extract_jd(state: WorkflowState) -> dict[str, object]:
     """节点 4：提取 JD 要求。"""
     result = extract_jd_requirements(state["jd_path"])
     return {"jd_requirements": result}
 
 
-def node_generate_base(state: WorkflowState) -> dict:
+def node_generate_base(state: WorkflowState) -> dict[str, object]:
     """节点 5：生成基础简历。"""
     result = generate_base_resume(
         state["user_profile"],
@@ -90,12 +91,27 @@ def node_generate_base(state: WorkflowState) -> dict:
     return {"base_resume": result}
 
 
-def node_customize(state: WorkflowState) -> dict:
-    """节点 6：JD 定制优化。"""
+def node_customize(state: WorkflowState) -> dict[str, object]:
+    """节点 6：JD 定制优化（带 Token 预算监控）。"""
+    budget = TokenBudget()
+
+    # 计入输入消耗
+    base = state.get("base_resume", "")
+    jd = state.get("jd_requirements")
+    if jd:
+        budget.add_usage(jd.model_dump_json(ensure_ascii=False))
+    budget.add_usage(base)
+
+    warning = budget.get_warning()
     result = customize_for_jd(
         state["base_resume"],
         state["jd_requirements"],
+        token_warning=warning,
     )
+
+    # 记录输出消耗
+    budget.add_usage(result)
+
     return {"customized_resume": result}
 
 
@@ -152,7 +168,7 @@ def run_workflow(
     sample_resume_path: str,
     jd_path: str,
     thread_id: str = "default",
-) -> dict:
+) -> dict[str, object]:
     """运行完整工作流，返回最终 state。
 
     参数：

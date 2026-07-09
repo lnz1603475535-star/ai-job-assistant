@@ -6,6 +6,8 @@ AI 简历生成器 - 数据模型
 - 在函数间传递类型安全的数据
 """
 
+import re
+
 from pydantic import BaseModel, Field
 from typing import List
 
@@ -59,3 +61,46 @@ class JDRequirements(BaseModel):
     nice_to_have: List[str] = Field(description="加分项，如 ['有大厂经验优先', '开源贡献']")
     keywords: List[str] = Field(description="JD 中反复出现的关键词，如 ['高并发', '微服务', 'K8s']")
     hidden_preferences: str = Field(description="从措辞推断的隐性偏好，如 '偏好有大厂背景的候选人'")
+
+
+# ============================================================
+# AI 提取结果校验
+# ============================================================
+
+def validate_experience_markdown(text: str) -> tuple[bool, str]:
+    """验证 AI 提取的 Markdown 是否符合经验库条目格式。
+
+    返回 (is_valid: bool, message: str)
+    - True, "格式验证通过"：可以追加到经验库
+    - False, "具体错误信息"：提示用户缺少什么
+    """
+    if not text or not text.strip():
+        return False, "提取结果为空，请提供更详细的经历描述后重试。"
+
+    lines = text.strip().split("\n")
+    first_line = lines[0].strip()
+
+    # 1. 标题必须以 "## 项目" 开头
+    if not first_line.startswith("## 项目"):
+        return False, f"标题格式错误：应以 '## 项目：...' 开头，当前为 '{first_line[:40]}'"
+
+    # 2. 检查必填字段
+    field_checks = [
+        ("时间", r"-\s*时间[：:]"),
+        ("角色", r"-\s*角色[：:]"),
+        ("技术栈", r"-\s*技术栈[：:]"),
+    ]
+    missing = [name for name, pattern in field_checks if not re.search(pattern, text)]
+
+    if missing:
+        return False, f"缺少必填字段：{'、'.join(missing)}。请补充后重试，或手动编辑补全。"
+
+    # 3. 检查是否有实际内容（非空字段，仅匹配同行）
+    time_match = re.search(r"-\s*时间[：:][^\S\r\n]*([^\r\n]*)", text)
+    role_match = re.search(r"-\s*角色[：:][^\S\r\n]*([^\r\n]*)", text)
+    if time_match and not time_match.group(1).strip():
+        return False, "时间字段为空，请补充时间段信息。"
+    if role_match and not role_match.group(1).strip():
+        return False, "角色字段为空，请补充职位名称。"
+
+    return True, "格式验证通过，可安全追加到经验库。"

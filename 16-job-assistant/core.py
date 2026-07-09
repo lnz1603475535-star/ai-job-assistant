@@ -8,6 +8,8 @@ AI 简历生成器 - 核心基础设施
 import os, re, warnings
 from typing import List
 
+import requests
+
 # 抑制依赖库的噪音警告（都不是项目代码的问题）
 warnings.filterwarnings("ignore", message=".*pkg_resources.*")
 warnings.filterwarnings("ignore", message=".*Accessing.*__path__.*")
@@ -22,7 +24,7 @@ from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain.agents import create_agent
 
-from langchain_community.document_loaders import TextLoader
+from langchain_community.document_loaders import TextLoader, PyPDFLoader, Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -81,7 +83,149 @@ def set_vectorstore(vs, bm25=None, chunks=None):
 # 文档处理
 # ============================================================
 
-def load_and_index_documents(file_paths: dict) -> tuple:
+def load_file_content(path: str) -> str:
+    """加载文件文本内容，自动检测 .txt / .pdf 格式。
+
+    参数：
+        path：文件路径（支持 .txt、.pdf 和 .docx）
+
+    返回：
+        文件的完整文本内容（PDF 多页用双换行拼接）
+
+    Raises:
+        FileNotFoundError: 文件不存在
+        ValueError: 加密 / 扫描件无文字 / 文件损坏（含中文提示）
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".pdf":
+        try:
+            from pypdf.errors import FileNotDecryptedError, PdfReadError
+        except ImportError:
+            FileNotDecryptedError = Exception
+            PdfReadError = Exception
+        try:
+            docs = PyPDFLoader(path).load()
+        except FileNotDecryptedError:
+            raise ValueError("PDF 文件已加密，请移除密码后重新上传。")
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "encrypt" in error_msg:
+                raise ValueError("PDF 文件已加密，请移除密码后重新上传。")
+            elif "corrupt" in error_msg or "not a pdf" in error_msg:
+                raise ValueError("PDF 文件已损坏或格式异常，请检查后重新上传。")
+            else:
+                raise ValueError(f"PDF 文件读取失败：{str(e)[:100]}")
+        text = "\n\n".join(d.page_content for d in docs)
+        if not text.strip():
+            raise ValueError("PDF 可能是扫描件，无法提取文字。请上传含文本的 PDF 或直接粘贴文字内容。")
+        return text
+    elif ext == ".docx":
+        try:
+            docs = Docx2txtLoader(path).load()
+            text = "\n\n".join(d.page_content for d in docs)
+            if not text.strip():
+                raise ValueError("Word 文件内容为空，请检查后重新上传。")
+            return text
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "encrypt" in error_msg or "password" in error_msg:
+                raise ValueError("Word 文件已加密，请移除密码后重新上传。")
+            elif "corrupt" in error_msg or "not a valid" in error_msg:
+                raise ValueError("Word 文件已损坏或格式异常，请检查后重新上传。")
+            else:
+                raise ValueError(f"Word 文件读取失败：{str(e)[:100]}")
+    else:
+        try:
+            return TextLoader(path, encoding="utf-8").load()[0].page_content
+        except UnicodeDecodeError:
+            raise ValueError("文件编码不支持，请保存为 UTF-8 编码后重新上传。")
+
+
+def fetch_url_content(url: str) -> str:
+    """从网页 URL 提取文本内容（自动去 HTML 标签）。
+
+    参数：
+        url：目标网页地址
+
+    返回：
+        提取后的纯文本内容
+
+    Raises:
+        ValueError：请求失败 / 超时 / 内容为空（含中文提示）
+    """
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("链接格式错误，请以 http:// 或 https:// 开头。")
+
+    try:
+        resp = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+            },
+            timeout=15,
+            allow_redirects=True,
+        )
+        resp.raise_for_status()
+
+        # 自动检测编码
+        resp.encoding = resp.apparent_encoding or "utf-8"
+    except requests.exceptions.Timeout:
+        raise ValueError("请求超时，请检查网络连接或换一个链接重试。")
+    except requests.exceptions.ConnectionError:
+        raise ValueError("无法连接到该网站，请检查链接是否正确。")
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response else "未知"
+        if status == 404:
+            raise ValueError("页面不存在（404），请检查链接是否正确。")
+        elif status == 403:
+            raise ValueError("网站拒绝访问（403），该页面可能需要登录。")
+        else:
+            raise ValueError(f"请求失败（HTTP {status}），请检查链接后重试。")
+    except requests.exceptions.RequestException as e:
+        raise ValueError(f"网络请求失败：{str(e)[:100]}")
+
+    if not resp.text.strip():
+        raise ValueError("页面内容为空，请检查链接是否正确。")
+
+    # 去 HTML 标签，提取正文
+    html = resp.text
+    # 移除 script / style 内容
+    html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+    # 替换常见块级标签为换行
+    html = re.sub(r'</?(?:br|p|div|li|tr|h[1-6])[^>]*>', '\n', html, flags=re.IGNORECASE)
+    # 去掉所有剩余 HTML 标签
+    text = re.sub(r'<[^>]+>', '', html)
+    # 解码 HTML 实体
+    text = text.replace('&nbsp;', ' ').replace('&lt;', '<').replace('&gt;', '>')
+    text = text.replace('&amp;', '&').replace('&quot;', '"').replace('&#x27;', "'")
+    # 合并连续空行
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    text = text.strip()
+
+    if not text:
+        raise ValueError("未能从页面提取到有效文字，该页面可能为纯图片或需 JavaScript 渲染。")
+
+    return text
+
+
+def _load_file_to_documents(path: str) -> list[Document]:
+    """加载文件为 LangChain Document 列表，自动检测 .txt / .pdf / .docx。"""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".pdf":
+        return PyPDFLoader(path).load()
+    if ext == ".docx":
+        return Docx2txtLoader(path).load()
+    return TextLoader(path, encoding="utf-8").load()
+
+
+def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple:
     """加载多类型文档，切分，建立 FAISS + BM25 双索引。
 
     参数：
@@ -94,7 +238,7 @@ def load_and_index_documents(file_paths: dict) -> tuple:
     all_docs = []
     for doc_type, paths in file_paths.items():
         for path in paths:
-            docs = TextLoader(path, encoding="utf-8").load()
+            docs = _load_file_to_documents(path)
             for doc in docs:
                 doc.metadata["doc_type"] = doc_type
             all_docs.extend(docs)
@@ -141,23 +285,40 @@ def search_documents(query: str, k: int = 4) -> str:
     else:
         bm25_top_indices = []
 
-    # 轮换合并 + 去重
-    seen = set()
-    merged = []
-    for i in range(max(len(faiss_docs), len(bm25_top_indices))):
-        if i < len(faiss_docs):
-            content = faiss_docs[i].page_content
-            if content not in seen:
-                doc_type = faiss_docs[i].metadata.get("doc_type", "unknown")
-                merged.append(f"[{doc_type}] {content}")
-                seen.add(content)
-        if i < len(bm25_top_indices):
-            idx = bm25_top_indices[i]
-            content = _chunks_text[idx]
-            if content not in seen:
-                doc_type = _chunks_metadata[idx].get("doc_type", "unknown")
-                merged.append(f"[{doc_type}] {content}")
-                seen.add(content)
+    # RRF 融合：Reciprocal Rank Fusion，k=60
+    # score(d) = sum(1/(K + rank_i(d)))，两路检索结果按排名加权融合
+    K = 60
+    rrf_scores: dict[str, dict] = {}  # content -> {"score": float, "doc_type": str}
+
+    # FAISS 排名得分（rank 从 0 开始）
+    for rank, doc in enumerate(faiss_docs):
+        content = doc.page_content
+        rrf_scores[content] = {
+            "score": 1.0 / (K + rank),
+            "doc_type": doc.metadata.get("doc_type", "unknown"),
+        }
+
+    # BM25 排名得分，与 FAISS 累加（同一文档被两路都找到时得分更高）
+    for rank, idx in enumerate(bm25_top_indices):
+        content = _chunks_text[idx]
+        score = 1.0 / (K + rank)
+        if content in rrf_scores:
+            rrf_scores[content]["score"] += score
+        else:
+            rrf_scores[content] = {
+                "score": score,
+                "doc_type": _chunks_metadata[idx].get("doc_type", "unknown"),
+            }
+
+    # 按 RRF 得分降序排列，取 top-k
+    sorted_results = sorted(
+        rrf_scores.items(), key=lambda x: x[1]["score"], reverse=True
+    )[:k]
+
+    merged = [f"[{meta['doc_type']}] {content}" for content, meta in sorted_results]
+
+    if not merged:
+        return "未找到相关文档。"
 
     return "\n\n---\n\n".join(merged)
 
@@ -165,7 +326,7 @@ def search_documents(query: str, k: int = 4) -> str:
 # 通用工具函数
 # ============================================================
 
-def parse_experience(level_text: str) -> dict:
+def parse_experience(level_text: str) -> dict[str, int | str | None]:
     """从水平描述中提取结构化信息。
 
     支持的格式：
@@ -190,6 +351,66 @@ def parse_experience(level_text: str) -> dict:
 
     # 3. 纯文字描述
     return {"years": None, "label": text}
+
+# ============================================================
+# Token 预算控制
+# ============================================================
+
+class TokenBudget:
+    """Token 预算跟踪器，基于字符数估算 Token 使用量。
+
+    估算方法（保守估算）：
+    - 中文字符：约 1 token / 1.5 字符
+    - 非中文字符（英文、数字、标点、空格）：约 1 token / 3.5 字符
+    """
+
+    def __init__(self, max_tokens: int = 8000, warning_threshold: float = 0.7):
+        self.max_tokens = max_tokens
+        self.warning_threshold = warning_threshold
+        self._used = 0
+        self._warning_issued = False
+
+    def estimate_tokens(self, text: str) -> int:
+        """估算文本的 token 数量。"""
+        if not text:
+            return 0
+        chinese = len(re.findall(r'[\u4e00-\u9fff\uff00-\uffef]', text))
+        other = len(text) - chinese
+        return int(chinese / 1.5 + other / 3.5) + 1  # +1 安全边界
+
+    def add_usage(self, text: str) -> int:
+        """记录 token 使用量，返回本次增加的 token 估算数。"""
+        tokens = self.estimate_tokens(text)
+        self._used += tokens
+        return tokens
+
+    @property
+    def used_tokens(self) -> int:
+        return self._used
+
+    @property
+    def usage_ratio(self) -> float:
+        if self.max_tokens == 0:
+            return 0.0
+        return self._used / self.max_tokens
+
+    def get_warning(self) -> str:
+        """超过阈值时返回警告文本，否则返回空字符串。每个预算只警告一次。"""
+        ratio = self.usage_ratio
+        if ratio >= 0.9:
+            self._warning_issued = True
+            return (
+                f"⚠️ Token 预算即将耗尽（{self._used}/{self.max_tokens}，{ratio:.0%}）。"
+                f"请保持回复简洁，优先输出关键内容，尽快给出最终结论。"
+            )
+        if ratio >= self.warning_threshold and not self._warning_issued:
+            self._warning_issued = True
+            return (
+                f"⚠️ Token 使用量已达 {ratio:.0%}（{self._used}/{self.max_tokens}）。"
+                f"请注意控制输出长度。"
+            )
+        return ""
+
 
 # ============================================================
 # Round 3：兼容性垫片已删除（app.py 不再使用）

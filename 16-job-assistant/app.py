@@ -15,9 +15,13 @@ from core import (
     load_and_index_documents,
     set_vectorstore,
     llm,
+    load_file_content,
+    fetch_url_content,
 )
 from workflow import run_workflow
 from resume_engine import parse_user_info
+from prompts import EXPERIENCE_EXTRACTION_PROMPT
+from models import validate_experience_markdown
 
 # ============================================================
 # 常量
@@ -93,19 +97,20 @@ def initialize_session_state():
 def save_uploaded_file(uploaded_file) -> tuple[str, str | None]:
     """保存上传文件到临时目录，返回 (路径, 错误消息)。
     成功时路径有效、错误为 None；失败时路径为空、错误为用户可读的提示。
+    支持 .txt 和 .pdf 格式。
     """
     try:
-        content = uploaded_file.getvalue().decode("utf-8")
-    except UnicodeDecodeError:
-        return "", "文件编码不支持，请保存为 UTF-8 编码的 .txt 文件后重新上传。"
+        content = uploaded_file.getvalue()
+    except Exception:
+        return "", "无法读取文件内容，请重新上传。"
 
-    if not content.strip():
+    if len(content) == 0:
         return "", "文件内容为空，请检查后重新上传。"
 
     suffix = os.path.splitext(uploaded_file.name)[1] or ".txt"
     path = os.path.join(tempfile.gettempdir(), f"resume_{uuid.uuid4().hex[:8]}{suffix}")
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        with open(path, "wb") as f:
             f.write(content)
     except (OSError, PermissionError):
         return "", "文件保存失败，请检查磁盘空间或临时目录权限后重试。"
@@ -146,8 +151,19 @@ def index_documents_if_needed():
             st.session_state.chunk_count = len(chunks)
             st.session_state.index_error = None
             st.toast(f"✅ 已索引 {len(chunks)} 个文本块")
-        except UnicodeDecodeError:
-            st.session_state.index_error = "encoding"
+        except (UnicodeDecodeError, ValueError) as e:
+            error_str = str(e).lower()
+            if "加密" in error_str or "encrypt" in error_str or "密码" in error_str:
+                st.session_state.index_error = "pdf_encrypted"
+            elif "扫描" in error_str or "scan" in error_str:
+                st.session_state.index_error = "pdf_scanned"
+            elif "损坏" in error_str or "corrupt" in error_str or "pdf" in error_str:
+                st.session_state.index_error = "pdf_corrupted"
+            elif "编码" in error_str or "encode" in error_str:
+                st.session_state.index_error = "encoding"
+            else:
+                st.session_state.index_error = "unknown"
+                st.session_state.index_error_detail = str(e)[:200]
         except FileNotFoundError:
             st.session_state.index_error = "missing"
         except Exception as e:
@@ -172,6 +188,9 @@ def show_index_error():
         "missing": "文件已被移动或删除，请回到前几步重新选择。",
         "empty":   "文件内容为空，请检查后重新选择。",
         "network": "首次使用需下载模型（约 400MB），请检查网络连接后重试。",
+        "pdf_encrypted": "PDF 文件已加密，请先解密为普通 PDF 后重新上传。",
+        "pdf_scanned": "PDF 可能是扫描件，无法提取文字。请上传含文本的 PDF 或使用 OCR 工具转换。",
+        "pdf_corrupted": "PDF 文件已损坏或格式异常，请检查后重新上传。",
         "unknown": f"索引失败：{st.session_state.get('index_error_detail', '未知错误')}",
     }
     st.error(messages.get(error_type, messages["unknown"]))
@@ -255,7 +274,7 @@ def step_1_resume():
     )
 
     if source == "📁 上传文件":
-        uploaded = st.file_uploader("上传简历 (.txt)", type=["txt"], key="step1_uploader")
+        uploaded = st.file_uploader("上传简历 (.txt, .pdf, .docx, .md)", type=["txt", "pdf", "docx", "md"], key="step1_uploader")
         if uploaded:
             path, error = save_uploaded_file(uploaded)
             if error:
@@ -284,16 +303,15 @@ def step_1_resume():
         st.info(f"📄 当前选择：**{st.session_state.resume_name}**")
         with st.expander("📄 内容预览"):
             try:
-                with open(st.session_state.resume_path, "r", encoding="utf-8") as f:
-                    content = f.read()
+                content = load_file_content(st.session_state.resume_path)
                 if not content.strip():
                     st.warning("文件内容为空，请重新选择。")
                     st.session_state.resume_path = None
                     st.session_state.resume_name = None
                 else:
                     st.text(content[:600] + ("..." if len(content) > 600 else ""))
-            except UnicodeDecodeError:
-                st.error("文件编码不支持，请保存为 UTF-8 格式后重新上传。")
+            except ValueError as e:
+                st.error(str(e))
                 st.session_state.resume_path = None
                 st.session_state.resume_name = None
             except FileNotFoundError:
@@ -302,6 +320,8 @@ def step_1_resume():
                 st.session_state.resume_name = None
             except (OSError, PermissionError):
                 st.error("无法读取文件，请检查文件权限后重试。")
+                st.session_state.resume_path = None
+                st.session_state.resume_name = None
 
 
 # ============================================================
@@ -310,17 +330,17 @@ def step_1_resume():
 
 def step_2_jd():
     st.header("② 选择职位描述 (JD)")
-    st.caption("上传目标岗位的 JD，或从样例中选择。AI 会根据 JD 要求定制简历内容。")
+    st.caption("上传文件、粘贴招聘链接、或从样例中选择。AI 会根据 JD 要求定制简历内容。")
 
     source = st.radio(
         "JD 来源",
-        ["📁 上传文件", "📋 选择样例"],
+        ["📁 上传文件", "🔗 粘贴链接", "📋 选择样例"],
         horizontal=True,
         key="jd_source",
     )
 
     if source == "📁 上传文件":
-        uploaded = st.file_uploader("上传 JD (.txt)", type=["txt"], key="step2_uploader")
+        uploaded = st.file_uploader("上传 JD (.txt, .pdf, .docx, .md)", type=["txt", "pdf", "docx", "md"], key="step2_uploader")
         if uploaded:
             path, error = save_uploaded_file(uploaded)
             if error:
@@ -332,6 +352,34 @@ def step_2_jd():
                 st.session_state.jd_name = uploaded.name
                 st.session_state.docs_indexed = False
                 st.toast(f"✅ 已上传：{uploaded.name}")
+
+    elif source == "🔗 粘贴链接":
+        url = st.text_input(
+            "粘贴招聘页面链接",
+            placeholder="https://www.example.com/jobs/python-backend",
+            key="step2_url_input",
+        )
+        if st.button("🔍 提取 JD 内容", key="step2_url_fetch"):
+            if not url.strip():
+                st.warning("请先粘贴链接。")
+            else:
+                with st.spinner("正在提取页面内容..."):
+                    try:
+                        text = fetch_url_content(url.strip())
+                        # 保存为临时文件
+                        suffix = ".txt"
+                        path = os.path.join(tempfile.gettempdir(), f"jd_url_{uuid.uuid4().hex[:8]}{suffix}")
+                        with open(path, "w", encoding="utf-8") as f:
+                            f.write(text)
+                        # 用 URL 最后一段作为显示名
+                        name = url.strip().rstrip("/").split("/")[-1] or "网页 JD"
+                        st.session_state.jd_path = path
+                        st.session_state.jd_name = f"🔗 {name}"
+                        st.session_state.docs_indexed = False
+                        st.toast(f"✅ 已提取：{name}（{len(text)} 字符）")
+                    except ValueError as e:
+                        st.error(str(e))
+
     else:
         labels = [j["label"] for j in AVAILABLE_JDS]
         choice = st.selectbox("选择样例 JD", labels, key="step2_sample_select")
@@ -349,16 +397,15 @@ def step_2_jd():
         st.info(f"📋 当前选择：**{st.session_state.jd_name}**")
         with st.expander("📋 内容预览"):
             try:
-                with open(st.session_state.jd_path, "r", encoding="utf-8") as f:
-                    content = f.read()
+                content = load_file_content(st.session_state.jd_path)
                 if not content.strip():
                     st.warning("文件内容为空，请重新选择。")
                     st.session_state.jd_path = None
                     st.session_state.jd_name = None
                 else:
                     st.text(content[:600] + ("..." if len(content) > 600 else ""))
-            except UnicodeDecodeError:
-                st.error("文件编码不支持，请保存为 UTF-8 格式后重新上传。")
+            except ValueError as e:
+                st.error(str(e))
                 st.session_state.jd_path = None
                 st.session_state.jd_name = None
             except FileNotFoundError:
@@ -367,6 +414,8 @@ def step_2_jd():
                 st.session_state.jd_name = None
             except (OSError, PermissionError):
                 st.error("无法读取文件，请检查文件权限后重试。")
+                st.session_state.jd_path = None
+                st.session_state.jd_name = None
 
 
 # ============================================================
@@ -625,25 +674,17 @@ def render_sidebar():
             else:
                 with st.spinner("AI 正在整理..."):
                     try:
-                        from langchain_core.messages import HumanMessage
-                        extraction_prompt = """你是一个经验库整理专家。从用户的口语描述中提取工作经历，格式化为结构化的 Markdown。
-
-提取规则：
-1. 找出每段工作经历的：公司/项目名称、时间段、角色、技术栈、具体成就
-2. 每段经历一个 ## 标题，格式如下：
-
-## 项目：{项目名称}
-- 时间：{时间段}
-- 角色：{角色}
-- 技术栈：{技术栈}
-- 详情：
-   {每个成就或职责用独立段落}
-
-3. 不要编造任何用户没有提到的信息。用中文输出。"""
-                        response = llm.invoke([
-                            HumanMessage(content=f"{extraction_prompt}\n\n用户描述：\n{raw}")
-                        ])
-                        st.session_state.ai_extract_result = response.content
+                        chain = EXPERIENCE_EXTRACTION_PROMPT | llm
+                        result = chain.invoke({"raw_text": raw})
+                        st.session_state.ai_extract_result = result.content
+                        # 格式校验
+                        is_valid, validation_msg = validate_experience_markdown(
+                            st.session_state.ai_extract_result
+                        )
+                        if is_valid:
+                            st.toast("✅ " + validation_msg)
+                        else:
+                            st.warning("⚠️ " + validation_msg)
                     except Exception as e:
                         error_str = str(e).lower()
                         if "timeout" in error_str or "timed out" in error_str:
@@ -735,8 +776,8 @@ def main():
 
     st.divider()
     st.caption(
-        "技术栈：LangChain · LangGraph · DeepSeek · FAISS · BM25 · jieba · Streamlit | "
-        "Round 3 — 分步向导 + 经验库管理"
+        "技术栈：LangChain | LangGraph | DeepSeek | FAISS | BM25 | jieba | Streamlit | "
+        "Round 4 — 分步向导 + 经验库管理"
     )
 
 
