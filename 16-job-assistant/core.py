@@ -5,8 +5,15 @@ AI 简历生成器 - 核心基础设施
 不包含任何业务逻辑——业务逻辑在 resume_engine.py 中。
 """
 
-import os, re
+import os, re, warnings
 from typing import List
+
+# 抑制依赖库的噪音警告（都不是项目代码的问题）
+warnings.filterwarnings("ignore", message=".*pkg_resources.*")
+warnings.filterwarnings("ignore", message=".*Accessing.*__path__.*")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+
 import jieba
 from dotenv import load_dotenv, find_dotenv
 
