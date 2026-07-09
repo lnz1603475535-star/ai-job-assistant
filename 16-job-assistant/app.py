@@ -476,7 +476,7 @@ def step_4_generate_preview():
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str or "timed out" in error_str:
-                        st.error("请求超时，请检查网络后点击"重新生成"重试。")
+                        st.error("请求超时，请检查网络后点击【重新生成】重试。")
                     elif "rate limit" in error_str or "too many" in error_str:
                         st.warning("请求过于频繁，请稍等片刻后重试。")
                     elif "unauthorized" in error_str or "auth" in error_str or "key" in error_str:
