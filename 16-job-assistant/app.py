@@ -286,9 +286,22 @@ def step_1_resume():
             try:
                 with open(st.session_state.resume_path, "r", encoding="utf-8") as f:
                     content = f.read()
-                st.text(content[:600] + ("..." if len(content) > 600 else ""))
-            except Exception:
-                st.warning("无法读取文件内容")
+                if not content.strip():
+                    st.warning("文件内容为空，请重新选择。")
+                    st.session_state.resume_path = None
+                    st.session_state.resume_name = None
+                else:
+                    st.text(content[:600] + ("..." if len(content) > 600 else ""))
+            except UnicodeDecodeError:
+                st.error("文件编码不支持，请保存为 UTF-8 格式后重新上传。")
+                st.session_state.resume_path = None
+                st.session_state.resume_name = None
+            except FileNotFoundError:
+                st.warning("文件已被移动或删除，请重新选择。")
+                st.session_state.resume_path = None
+                st.session_state.resume_name = None
+            except (OSError, PermissionError):
+                st.error("无法读取文件，请检查文件权限后重试。")
 
 
 # ============================================================
@@ -338,9 +351,22 @@ def step_2_jd():
             try:
                 with open(st.session_state.jd_path, "r", encoding="utf-8") as f:
                     content = f.read()
-                st.text(content[:600] + ("..." if len(content) > 600 else ""))
-            except Exception:
-                st.warning("无法读取文件内容")
+                if not content.strip():
+                    st.warning("文件内容为空，请重新选择。")
+                    st.session_state.jd_path = None
+                    st.session_state.jd_name = None
+                else:
+                    st.text(content[:600] + ("..." if len(content) > 600 else ""))
+            except UnicodeDecodeError:
+                st.error("文件编码不支持，请保存为 UTF-8 格式后重新上传。")
+                st.session_state.jd_path = None
+                st.session_state.jd_name = None
+            except FileNotFoundError:
+                st.warning("文件已被移动或删除，请重新选择。")
+                st.session_state.jd_path = None
+                st.session_state.jd_name = None
+            except (OSError, PermissionError):
+                st.error("无法读取文件，请检查文件权限后重试。")
 
 
 # ============================================================
