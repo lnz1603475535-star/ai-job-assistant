@@ -474,7 +474,17 @@ def step_4_generate_preview():
                         st.session_state.processing = False
                         st.rerun()
                 except Exception as e:
-                    st.error(f"生成失败：{e}")
+                    error_str = str(e).lower()
+                    if "timeout" in error_str or "timed out" in error_str:
+                        st.error("请求超时，请检查网络后点击"重新生成"重试。")
+                    elif "rate limit" in error_str or "too many" in error_str:
+                        st.warning("请求过于频繁，请稍等片刻后重试。")
+                    elif "unauthorized" in error_str or "auth" in error_str or "key" in error_str:
+                        st.error("API 认证失败，请检查 .env 中的 DEEPSEEK_API_KEY 是否正确。")
+                    elif "connect" in error_str or "network" in error_str or "refused" in error_str:
+                        st.error("无法连接到 AI 服务，请检查网络连接后重试。")
+                    else:
+                        st.error(f"生成失败：{str(e)[:200]}")
                     st.session_state.processing = False
 
     # 已生成时显示预览
