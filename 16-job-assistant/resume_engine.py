@@ -15,6 +15,7 @@ from prompts import (
     STYLE_EXTRACTION_PROMPT,
     JD_REQUIREMENTS_PROMPT,
     BASE_RESUME_PROMPT,
+    JD_CUSTOMIZE_SYSTEM_PROMPT,
 )
 from core import llm, search_documents, load_file_content
 
@@ -160,15 +161,7 @@ def customize_for_jd(base_resume: str, jd_reqs: JDRequirements,
     """
     system_prompt = (
         (token_warning + "\n\n") if token_warning else ""
-    ) + """你是一个简历优化专家。根据 JD 要求优化简历。
-
-规则：
-1. 使用 search_documents 查找用户经历中与 JD 相关的细节
-2. 绝对不编造用户没有的经历或技能——严禁修改公司名称、时间、职位等事实信息
-3. 将 JD 关键词自然地融入已有经历的描述中，不堆砌
-4. 调整措辞使经历听起来更贴合 JD 要求
-5. 输出格式与输入简历的 Markdown 结构保持一致
-6. 输出优化后的完整简历（Markdown 格式），不要输出解释性文字"""
+    ) + JD_CUSTOMIZE_SYSTEM_PROMPT
 
     agent = create_agent(
         model=llm,

@@ -100,12 +100,16 @@ def normalize_text(text: str) -> str:
         prev_stripped = lines[i - 1].strip() if i > 0 else ""
 
         # 当前行或上一行是列表项 / 标题 → 保留独立换行
-        is_special = bool(
-            re.match(r'^[-*•]\s|^\d+[.、)]\s|^#{1,6}\s', stripped)
+        # \s* 容忍 PDF 解析丢掉空格 / 全角空格（\s 已覆盖 U+3000）
+        _list_re = (
+            r'^[-*•]\s*'                          # -item  *item  •item（含空格/全角空格）
+            r'|^\d+[.、)]\s*'                     # 1.item  1、item  1)item
+            r'|^（[一二三四五六七八九十\d]+）'      # （一）（1）
+            r'|^[一二三四五六七八九十]+[、．]'      # 一、item  二．item
+            r'|^#{1,6}\s'                         # ## heading（标题必须有空格）
         )
-        prev_is_special = bool(
-            re.match(r'^[-*•]\s|^\d+[.、)]\s|^#{1,6}\s', prev_stripped)
-        )
+        is_special = bool(re.match(_list_re, stripped))
+        prev_is_special = bool(re.match(_list_re, prev_stripped))
 
         if i == 0:
             result.append(line)
