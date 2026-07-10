@@ -10,7 +10,7 @@ from typing import List
 
 import requests
 
-# 抑制依赖库的噪音警告（都不是项目代码的问题）
+# 抑制依赖库的噪音警告
 warnings.filterwarnings("ignore", message=".*pkg_resources.*")
 warnings.filterwarnings("ignore", message=".*Accessing.*__path__.*")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
@@ -83,6 +83,19 @@ def set_vectorstore(vs, bm25=None, chunks=None):
 # 文档处理
 # ============================================================
 
+def normalize_text(text: str) -> str:
+    """文本规范化：修复 PDF/网页提取常见的格式问题。
+
+    - PDF 每行末尾硬换行 → 合并为段落
+    - 多余空行（3 个以上）→ 合并为双换行
+    """
+    # 单换行（非段落分隔）合并为空格——PDF 常见每行一个硬换行
+    text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)
+    # 3 个及以上连续换行 → 双换行
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
 def load_file_content(path: str) -> str:
     """加载文件文本内容，自动检测 .txt / .pdf 格式。
 
@@ -115,14 +128,14 @@ def load_file_content(path: str) -> str:
                 raise ValueError("PDF 文件已损坏或格式异常，请检查后重新上传。")
             else:
                 raise ValueError(f"PDF 文件读取失败：{str(e)[:100]}")
-        text = "\n\n".join(d.page_content for d in docs)
+        text = normalize_text("\n\n".join(d.page_content for d in docs))
         if not text.strip():
             raise ValueError("PDF 可能是扫描件，无法提取文字。请上传含文本的 PDF 或直接粘贴文字内容。")
         return text
     elif ext == ".docx":
         try:
             docs = Docx2txtLoader(path).load()
-            text = "\n\n".join(d.page_content for d in docs)
+            text = normalize_text("\n\n".join(d.page_content for d in docs))
             if not text.strip():
                 raise ValueError("Word 文件内容为空，请检查后重新上传。")
             return text
@@ -212,7 +225,7 @@ def fetch_url_content(url: str) -> str:
     if not text:
         raise ValueError("未能从页面提取到有效文字，该页面可能为纯图片或需 JavaScript 渲染。")
 
-    return text
+    return normalize_text(text)
 
 
 def _load_file_to_documents(path: str) -> list[Document]:
@@ -244,7 +257,7 @@ def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple:
             all_docs.extend(docs)
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=300, chunk_overlap=50,
+        chunk_size=500, chunk_overlap=100,
         separators=["\n\n", "\n", "。", "，", " ", ""],
     )
     chunks = splitter.split_documents(all_docs)
