@@ -15,7 +15,6 @@ from prompts import (
     STYLE_EXTRACTION_PROMPT,
     JD_REQUIREMENTS_PROMPT,
     BASE_RESUME_PROMPT,
-    JD_CUSTOMIZE_PROMPT,
 )
 from core import llm, search_documents, load_file_content
 

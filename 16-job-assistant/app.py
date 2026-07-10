@@ -651,7 +651,7 @@ def render_sidebar():
                 st.error("保存失败：文件被占用或没有写入权限，请关闭其他程序后重试。")
             except OSError:
                 st.error("保存失败：磁盘空间不足或文件系统错误，请检查后重试。")
-            except Exception:
+            except Exception as e:
                 st.error(f"保存失败：{str(e)[:150]}")
 
         st.divider()
@@ -719,7 +719,7 @@ def render_sidebar():
                         st.error("写入失败：文件被占用或没有写入权限，请关闭其他程序后重试。")
                     except OSError:
                         st.error("写入失败：磁盘空间不足或文件系统错误，请检查后重试。")
-                    except Exception:
+                    except Exception as e:
                         st.error(f"写入失败：{str(e)[:150]}")
             with c2:
                 if st.button("❌ 取消", use_container_width=True):

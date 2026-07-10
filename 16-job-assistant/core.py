@@ -90,6 +90,8 @@ def normalize_text(text: str) -> str:
     - 列表项 / 标题行保留独立换行，不会被合并
     - 多余空行（3 个以上）→ 合并为双换行
     """
+    # 统一换行符（Windows \r\n → \n）
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = text.split("\n")
     result: list[str] = []
 
@@ -255,13 +257,15 @@ def fetch_url_content(url: str) -> str:
 
 
 def _load_file_to_documents(path: str) -> list[Document]:
-    """加载文件为 LangChain Document 列表，自动检测 .txt / .pdf / .docx。"""
+    """加载文件为 LangChain Document 列表，自动检测 .txt / .pdf / .docx / .md。"""
     ext = os.path.splitext(path)[1].lower()
     if ext == ".pdf":
         return PyPDFLoader(path).load()
     if ext == ".docx":
         return Docx2txtLoader(path).load()
-    return TextLoader(path, encoding="utf-8").load()
+    if ext in (".txt", ".md", ""):
+        return TextLoader(path, encoding="utf-8").load()
+    raise ValueError(f"不支持的文件格式：{ext}。支持的格式：.txt / .pdf / .docx / .md")
 
 
 def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple:
@@ -307,6 +311,12 @@ def search_documents(query: str, k: int = 4) -> str:
     query：中文或英文的自然语言搜索词。"""
     if _vectorstore is None:
         return "尚未加载任何文档。"
+    if _bm25_index is None:
+        return "关键词索引不可用，请重新索引文档。"
+
+    # 防止空查询返回随机结果
+    if not query.strip():
+        return "未提供搜索词。"
 
     # FAISS 语义检索（MMR：相关性 + 多样性，避免返回重复内容）
     faiss_docs = _vectorstore.max_marginal_relevance_search(
