@@ -87,12 +87,38 @@ def normalize_text(text: str) -> str:
     """文本规范化：修复 PDF/网页提取常见的格式问题。
 
     - PDF 每行末尾硬换行 → 合并为段落
+    - 列表项 / 标题行保留独立换行，不会被合并
     - 多余空行（3 个以上）→ 合并为双换行
     """
-    # 单换行（非段落分隔）合并为空格——PDF 常见每行一个硬换行
-    text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)
+    lines = text.split("\n")
+    result: list[str] = []
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        prev_stripped = lines[i - 1].strip() if i > 0 else ""
+
+        # 当前行或上一行是列表项 / 标题 → 保留独立换行
+        is_special = bool(
+            re.match(r'^[-*•]\s|^\d+[.、)]\s|^#{1,6}\s', stripped)
+        )
+        prev_is_special = bool(
+            re.match(r'^[-*•]\s|^\d+[.、)]\s|^#{1,6}\s', prev_stripped)
+        )
+
+        if i == 0:
+            result.append(line)
+        elif stripped == "":
+            result.append("")
+        elif prev_stripped == "" or is_special or prev_is_special:
+            # 新段落 / 列表项 / 标题 —— 保留换行
+            result.append(line)
+        else:
+            # 同一段落继续 → 合并到上一行
+            result[-1] = result[-1] + " " + stripped
+
+    text = "\n".join(result)
     # 3 个及以上连续换行 → 双换行
-    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
@@ -425,6 +451,4 @@ class TokenBudget:
         return ""
 
 
-# ============================================================
-# Round 3：兼容性垫片已删除（app.py 不再使用）
-# ============================================================
+
