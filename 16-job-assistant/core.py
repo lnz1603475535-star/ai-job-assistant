@@ -218,8 +218,29 @@ def fetch_url_content(url: str) -> str:
         )
         resp.raise_for_status()
 
-        # 自动检测编码
-        resp.encoding = resp.apparent_encoding or "utf-8"
+        # 自动检测编码，带乱码回退
+        raw = resp.content
+        encodings = [resp.apparent_encoding, "utf-8", "gbk", "gb2312"]
+        decoded = None
+
+        for enc in encodings:
+            if not enc:
+                continue
+            try:
+                text = raw.decode(enc)
+            except (UnicodeDecodeError, LookupError):
+                continue
+            # 检测乱码：替换字符太多 → 编码不对
+            if text.count("�") > len(text) * 0.01:
+                continue
+            decoded = text
+            break
+
+        if decoded is None:
+            raise ValueError("无法识别该网页的文字编码，请尝试直接复制 JD 文字后上传。")
+        resp.encoding = None  # 用已解码的文本，不再走 resp.text
+        resp._content = decoded.encode("utf-8")
+        resp.encoding = "utf-8"
     except requests.exceptions.Timeout:
         raise ValueError("请求超时，请检查网络连接或换一个链接重试。")
     except requests.exceptions.ConnectionError:
