@@ -186,118 +186,118 @@ def load_file_content(path: str) -> str:
             raise ValueError("文件编码不支持，请保存为 UTF-8 编码后重新上传。")
 
 
+# ── URL 请求 ────────────────────────────────────────────
+
+_REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+}
+
+_LOGIN_URL_PATTERNS = ["/login", "/auth", "/signin", "auth=", "redirect="]
+_LOGIN_CONTENT_KEYWORDS = [
+    "用户名", "密码", "验证码", "忘记密码", "username", "password", "captcha",
+]
+
+
+def _smart_decode(raw: bytes, fallback_encodings: list[str]) -> str:
+    """多级编码回退 + 乱码检测。"""
+    for enc in fallback_encodings:
+        if not enc:
+            continue
+        try:
+            text = raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        if text.count("�") > len(text) * 0.01:  # 替换字符太多
+            continue
+        return text
+    raise ValueError("无法识别该网页的文字编码，请尝试直接复制 JD 文字后上传。")
+
+
+def _check_login_redirect(resp) -> None:
+    """检测 302 重定向是否到了登录页。"""
+    if resp.history and any(p in resp.url.lower() for p in _LOGIN_URL_PATTERNS):
+        raise ValueError(
+            "该链接已重定向到登录页面，需要先登录才能查看 JD 内容。"
+            "请直接复制 JD 文字粘贴到上传文件，或换一个不需要登录的链接。"
+        )
+
+
+def _check_login_content(text: str) -> None:
+    """检测提取内容是否为登录表单。"""
+    text_lower = text.lower()
+    hits = [kw for kw in _LOGIN_CONTENT_KEYWORDS if kw in text_lower]
+    if len(hits) >= 2 and len(text) < 2000:
+        raise ValueError(
+            f"提取内容疑似登录页面（检测到：{'、'.join(hits[:3])}），"
+            "不是招聘 JD。请直接复制 JD 文字后上传文件。"
+        )
+
+
+def _strip_html(html: str) -> str:
+    """去除 HTML 标签，提取纯文本正文。"""
+    html = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    html = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    html = re.sub(r"</?(?:br|p|div|li|tr|h[1-6])[^>]*>", "\n", html, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", html)
+    text = text.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">")
+    text = text.replace("&amp;", "&").replace("&quot;", '"').replace("&#x27;", "'")
+    text = re.sub(r"\n\s*\n", "\n\n", text)
+    return text.strip()
+
+
+# ── 公开函数 ────────────────────────────────────────────
+
 def fetch_url_content(url: str) -> str:
-    """从网页 URL 提取文本内容（自动去 HTML 标签）。
-
-    参数：
-        url：目标网页地址
-
-    返回：
-        提取后的纯文本内容
+    """从网页 URL 提取文本内容（自动去 HTML 标签、检测登录页、编码回退）。
 
     Raises:
-        ValueError：请求失败 / 超时 / 内容为空（含中文提示）
+        ValueError：请求失败 / 超时 / 编码无法识别 / 内容是登录页（含中文提示）
     """
     if not url.startswith(("http://", "https://")):
         raise ValueError("链接格式错误，请以 http:// 或 https:// 开头。")
 
+    # 1. HTTP 请求
     try:
         resp = requests.get(
-            url,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "zh-CN,zh;q=0.9",
-            },
-            timeout=15,
-            allow_redirects=True,
+            url, headers=_REQUEST_HEADERS, timeout=15, allow_redirects=True,
         )
         resp.raise_for_status()
-
-        # 自动检测编码，带乱码回退
-        raw = resp.content
-        encodings = [resp.apparent_encoding, "utf-8", "gbk", "gb2312"]
-        decoded = None
-
-        for enc in encodings:
-            if not enc:
-                continue
-            try:
-                text = raw.decode(enc)
-            except (UnicodeDecodeError, LookupError):
-                continue
-            # 检测乱码：替换字符太多 → 编码不对
-            if text.count("�") > len(text) * 0.01:
-                continue
-            decoded = text
-            break
-
-        if decoded is None:
-            raise ValueError("无法识别该网页的文字编码，请尝试直接复制 JD 文字后上传。")
-        resp.encoding = None  # 用已解码的文本，不再走 resp.text
-        resp._content = decoded.encode("utf-8")
-        resp.encoding = "utf-8"
     except requests.exceptions.Timeout:
         raise ValueError("请求超时，请检查网络连接或换一个链接重试。")
     except requests.exceptions.ConnectionError:
         raise ValueError("无法连接到该网站，请检查链接是否正确。")
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response else "未知"
-        if status == 404:
-            raise ValueError("页面不存在（404），请检查链接是否正确。")
-        elif status == 403:
-            raise ValueError("网站拒绝访问（403），该页面可能需要登录。")
-        else:
-            raise ValueError(f"请求失败（HTTP {status}），请检查链接后重试。")
+        messages = {404: "页面不存在", 403: "网站拒绝访问，该页面可能需要登录"}
+        raise ValueError(f"{messages.get(status, f'请求失败（HTTP {status}）')}，请检查链接后重试。")
     except requests.exceptions.RequestException as e:
         raise ValueError(f"网络请求失败：{str(e)[:100]}")
+
+    # 2. 解码
+    encodings = [resp.apparent_encoding, "utf-8", "gbk", "gb2312"]
+    decoded = _smart_decode(resp.content, encodings)
+    resp.encoding = "utf-8"
+    resp._content = decoded.encode("utf-8")
 
     if not resp.text.strip():
         raise ValueError("页面内容为空，请检查链接是否正确。")
 
-    # 检测 302 重定向到登录页（最终 URL 含 login/auth/signin）
-    final_url = resp.url.lower()
-    _login_url_patterns = ["/login", "/auth", "/signin", "auth=", "redirect="]
-    if resp.history and any(p in final_url for p in _login_url_patterns):
-        raise ValueError(
-            "该链接已重定向到登录页面，需要先登录才能查看 JD 内容。"
-            "请直接复制 JD 文字粘贴到上传文件，或换一个不需要登录的链接。"
-        )
+    # 3. 登录页检测
+    _check_login_redirect(resp)
 
-    # 去 HTML 标签，提取正文
-    html = resp.text
-    # 移除 script / style 内容
-    html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
-    html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
-    # 替换常见块级标签为换行
-    html = re.sub(r'</?(?:br|p|div|li|tr|h[1-6])[^>]*>', '\n', html, flags=re.IGNORECASE)
-    # 去掉所有剩余 HTML 标签
-    text = re.sub(r'<[^>]+>', '', html)
-    # 解码 HTML 实体
-    text = text.replace('&nbsp;', ' ').replace('&lt;', '<').replace('&gt;', '>')
-    text = text.replace('&amp;', '&').replace('&quot;', '"').replace('&#x27;', "'")
-    # 合并连续空行
-    text = re.sub(r'\n\s*\n', '\n\n', text)
-    text = text.strip()
-
+    # 4. HTML → 纯文本
+    text = _strip_html(resp.text)
     if not text:
         raise ValueError("未能从页面提取到有效文字，该页面可能为纯图片或需 JavaScript 渲染。")
 
-    # 检测提取内容是否为登录页（URL 绕过但内容是登录表单）
-    text_lower = text.lower()
-    _login_content_keywords = ["用户名", "密码", "验证码", "忘记密码",
-                                "username", "password", "captcha"]
-    login_hits = [kw for kw in _login_content_keywords if kw in text_lower]
-    if len(login_hits) >= 2 and len(text) < 2000:
-        raise ValueError(
-            f"提取内容疑似登录页面（检测到：{'、'.join(login_hits[:3])}），"
-            "不是招聘 JD。请直接复制 JD 文字后上传文件。"
-        )
-
+    # 5. 内容登录检测 + 规范化
+    _check_login_content(text)
     return normalize_text(text)
 
 
