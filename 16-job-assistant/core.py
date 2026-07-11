@@ -238,6 +238,15 @@ def fetch_url_content(url: str) -> str:
     if not resp.text.strip():
         raise ValueError("页面内容为空，请检查链接是否正确。")
 
+    # 检测 302 重定向到登录页（最终 URL 含 login/auth/signin）
+    final_url = resp.url.lower()
+    _login_url_patterns = ["/login", "/auth", "/signin", "auth=", "redirect="]
+    if resp.history and any(p in final_url for p in _login_url_patterns):
+        raise ValueError(
+            "该链接已重定向到登录页面，需要先登录才能查看 JD 内容。"
+            "请直接复制 JD 文字粘贴到上传文件，或换一个不需要登录的链接。"
+        )
+
     # 去 HTML 标签，提取正文
     html = resp.text
     # 移除 script / style 内容
@@ -256,6 +265,17 @@ def fetch_url_content(url: str) -> str:
 
     if not text:
         raise ValueError("未能从页面提取到有效文字，该页面可能为纯图片或需 JavaScript 渲染。")
+
+    # 检测提取内容是否为登录页（URL 绕过但内容是登录表单）
+    text_lower = text.lower()
+    _login_content_keywords = ["用户名", "密码", "验证码", "忘记密码",
+                                "username", "password", "captcha"]
+    login_hits = [kw for kw in _login_content_keywords if kw in text_lower]
+    if len(login_hits) >= 2 and len(text) < 2000:
+        raise ValueError(
+            f"提取内容疑似登录页面（检测到：{'、'.join(login_hits[:3])}），"
+            "不是招聘 JD。请直接复制 JD 文字后上传文件。"
+        )
 
     return normalize_text(text)
 
