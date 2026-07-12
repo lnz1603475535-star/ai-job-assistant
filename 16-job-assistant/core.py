@@ -304,24 +304,26 @@ _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 def _load_file_to_documents(path: str) -> list[Document]:
     """加载文件为 LangChain Document 列表，自动检测 .txt / .pdf / .docx / .md。"""
-    file_size = os.path.getsize(path)
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in (".pdf", ".docx", ".txt", ".md", ""):
+        raise ValueError(f"不支持的文件格式：{ext}。支持的格式：.txt / .pdf / .docx / .md")
+
+    try:
+        file_size = os.path.getsize(path)
+    except OSError as e:
+        raise ValueError(f"文件不存在或无法访问：{os.path.basename(path)}")
     if file_size > _MAX_FILE_SIZE:
         raise ValueError(
             f"文件过大（{file_size / 1024 / 1024:.1f}MB），请压缩后再上传。"
             f"简历文件建议 < 5MB。"
         )
 
-    ext = os.path.splitext(path)[1].lower()
     try:
         if ext == ".pdf":
             return PyPDFLoader(path).load()
         if ext == ".docx":
             return Docx2txtLoader(path).load()
-        if ext in (".txt", ".md", ""):
-            return TextLoader(path, encoding="utf-8").load()
-        raise ValueError(f"不支持的文件格式：{ext}。支持的格式：.txt / .pdf / .docx / .md")
-    except ValueError:
-        raise
+        return TextLoader(path, encoding="utf-8").load()
     except Exception as e:
         error_msg = str(e).lower()
         if "encrypt" in error_msg or "password" in error_msg:
