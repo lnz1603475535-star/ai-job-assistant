@@ -302,13 +302,24 @@ def fetch_url_content(url: str) -> str:
 def _load_file_to_documents(path: str) -> list[Document]:
     """加载文件为 LangChain Document 列表，自动检测 .txt / .pdf / .docx / .md。"""
     ext = os.path.splitext(path)[1].lower()
-    if ext == ".pdf":
-        return PyPDFLoader(path).load()
-    if ext == ".docx":
-        return Docx2txtLoader(path).load()
-    if ext in (".txt", ".md", ""):
-        return TextLoader(path, encoding="utf-8").load()
-    raise ValueError(f"不支持的文件格式：{ext}。支持的格式：.txt / .pdf / .docx / .md")
+    try:
+        if ext == ".pdf":
+            return PyPDFLoader(path).load()
+        if ext == ".docx":
+            return Docx2txtLoader(path).load()
+        if ext in (".txt", ".md", ""):
+            return TextLoader(path, encoding="utf-8").load()
+        raise ValueError(f"不支持的文件格式：{ext}。支持的格式：.txt / .pdf / .docx / .md")
+    except ValueError:
+        raise
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "encrypt" in error_msg or "password" in error_msg:
+            raise ValueError(f"文件已加密，无法读取：{os.path.basename(path)}")
+        elif "corrupt" in error_msg or "not a pdf" in error_msg or "not a valid" in error_msg:
+            raise ValueError(f"文件已损坏或格式异常：{os.path.basename(path)}")
+        else:
+            raise ValueError(f"文件读取失败（{os.path.basename(path)}）：{str(e)[:100]}")
 
 
 def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple:
