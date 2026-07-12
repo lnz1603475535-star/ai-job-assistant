@@ -21,8 +21,6 @@ from dotenv import load_dotenv, find_dotenv
 
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain.agents import create_agent
 
 from langchain_community.document_loaders import TextLoader, PyPDFLoader, Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -75,7 +73,7 @@ def set_vectorstore(vs, bm25=None, chunks=None):
     global _vectorstore, _bm25_index, _chunks_text, _chunks_metadata
     _vectorstore = vs
     _bm25_index = bm25
-    if chunks:
+    if chunks is not None:
         _chunks_text = [c.page_content for c in chunks]
         _chunks_metadata = [c.metadata for c in chunks]
 
@@ -413,7 +411,7 @@ def search_documents(query: str, k: int = 4) -> str:
     # RRF 融合：Reciprocal Rank Fusion，k=60
     # score(d) = sum(1/(K + rank_i(d)))，两路检索结果按排名加权融合
     K = 60
-    rrf_scores: dict[str, dict] = {}  # content -> {"score": float, "doc_type": str}
+    rrf_scores: dict[str, dict[str, float | str]] = {}  # content -> {"score": float, "doc_type": str}
 
     # FAISS 排名得分（rank 从 0 开始）
     for rank, doc in enumerate(faiss_docs):
