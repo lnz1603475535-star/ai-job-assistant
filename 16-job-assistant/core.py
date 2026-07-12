@@ -340,6 +340,7 @@ def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple:
         for path in paths:
             docs = _load_file_to_documents(path)
             for doc in docs:
+                doc.page_content = normalize_text(doc.page_content)
                 doc.metadata["doc_type"] = doc_type
             all_docs.extend(docs)
 
