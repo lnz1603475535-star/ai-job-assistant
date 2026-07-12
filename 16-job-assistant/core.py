@@ -139,7 +139,7 @@ def load_file_content(path: str) -> str:
 
     Raises:
         FileNotFoundError: 文件不存在
-        ValueError: 加密 / 扫描件无文字 / 文件损坏（含中文提示）
+        ValueError: 加密 / 扫描件无文字 / 文件损坏
     """
     ext = os.path.splitext(path)[1].lower()
     if ext == ".pdf":
@@ -281,18 +281,16 @@ def fetch_url_content(url: str) -> str:
 
     # 2. 解码
     encodings = [resp.apparent_encoding, "utf-8", "gbk", "gb2312"]
-    decoded = _smart_decode(resp.content, encodings)
-    resp.encoding = "utf-8"
-    resp._content = decoded.encode("utf-8")
+    html = _smart_decode(resp.content, encodings)
 
-    if not resp.text.strip():
+    if not html.strip():
         raise ValueError("页面内容为空，请检查链接是否正确。")
 
     # 3. 登录页检测
     _check_login_redirect(resp)
 
     # 4. HTML → 纯文本
-    text = _strip_html(resp.text)
+    text = _strip_html(html)
     if not text:
         raise ValueError("未能从页面提取到有效文字，该页面可能为纯图片或需 JavaScript 渲染。")
 
