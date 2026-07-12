@@ -299,8 +299,18 @@ def fetch_url_content(url: str) -> str:
     return normalize_text(text)
 
 
+_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+
 def _load_file_to_documents(path: str) -> list[Document]:
     """加载文件为 LangChain Document 列表，自动检测 .txt / .pdf / .docx / .md。"""
+    file_size = os.path.getsize(path)
+    if file_size > _MAX_FILE_SIZE:
+        raise ValueError(
+            f"文件过大（{file_size / 1024 / 1024:.1f}MB），请压缩后再上传。"
+            f"简历文件建议 < 5MB。"
+        )
+
     ext = os.path.splitext(path)[1].lower()
     try:
         if ext == ".pdf":
@@ -322,7 +332,7 @@ def _load_file_to_documents(path: str) -> list[Document]:
             raise ValueError(f"文件读取失败（{os.path.basename(path)}）：{str(e)[:100]}")
 
 
-def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple:
+def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple[object, object, list[Document]]:
     """加载多类型文档，切分，建立 FAISS + BM25 双索引。
 
     参数：
