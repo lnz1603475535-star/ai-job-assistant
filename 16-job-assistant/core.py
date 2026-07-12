@@ -348,7 +348,7 @@ def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple:
     vectorstore = FAISS.from_documents(chunks, embeddings)
 
     # 建立 BM25 关键词索引（jieba 中文分词）
-    bm25 = BM25Okapi([" ".join(jieba.lcut(c.page_content)) for c in chunks])
+    bm25 = BM25Okapi([jieba.lcut(c.page_content) for c in chunks])
 
     return vectorstore, bm25, chunks
 
