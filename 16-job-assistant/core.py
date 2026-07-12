@@ -349,7 +349,7 @@ def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple:
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=500, chunk_overlap=100,
-        separators=["\n\n", "\n", "。", "，", " ", ""],
+        separators=["\n\n", "。", "！", "？", "\n", "，", " ", ""],
     )
     chunks = splitter.split_documents(all_docs)
 
