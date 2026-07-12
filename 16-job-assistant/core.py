@@ -257,7 +257,7 @@ def fetch_url_content(url: str) -> str:
     """从网页 URL 提取文本内容（自动去 HTML 标签、检测登录页、编码回退）。
 
     Raises:
-        ValueError：请求失败 / 超时 / 编码无法识别 / 内容是登录页（含中文提示）
+        ValueError：请求失败 / 超时 / 编码无法识别 / 内容是登录页
     """
     if not url.startswith(("http://", "https://")):
         raise ValueError("链接格式错误，请以 http:// 或 https:// 开头。")
@@ -321,6 +321,9 @@ def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple:
     返回：
         (vectorstore, bm25_index, chunks)
     """
+    if not file_paths:
+        raise ValueError("未指定任何文档路径。")
+
     all_docs = []
     for doc_type, paths in file_paths.items():
         for path in paths:
@@ -329,11 +332,17 @@ def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple:
                 doc.metadata["doc_type"] = doc_type
             all_docs.extend(docs)
 
+    if not all_docs:
+        raise ValueError("所有文档均为空，无法建立索引。请检查文件内容。")
+
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=500, chunk_overlap=100,
         separators=["\n\n", "\n", "。", "，", " ", ""],
     )
     chunks = splitter.split_documents(all_docs)
+
+    if not chunks:
+        raise ValueError("文档切分后无有效内容，请检查文件是否只有空白字符。")
 
     embeddings = get_embeddings()
     vectorstore = FAISS.from_documents(chunks, embeddings)
