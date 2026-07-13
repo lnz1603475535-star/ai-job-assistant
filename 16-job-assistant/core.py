@@ -414,12 +414,33 @@ class TokenBudget:
     LLM 响应的 response_metadata["token_usage"] 包含真实的 input/output token 数。
     """
 
-    def __init__(self, max_tokens: int = 8000, warning_ratio: float = 0.7):
+    def __init__(self, max_tokens: int = 15000, warning_ratio: float = 0.7):
         self.max_tokens = max_tokens
         self.warning_ratio = warning_ratio
         self.input_tokens = 0
         self.output_tokens = 0
         self._warning_issued = False
+
+    def record(self, input_tokens: int = 0, output_tokens: int = 0):
+        """累积记录 token 用量。"""
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+
+    @staticmethod
+    def _parse_usage(usage: dict) -> tuple[int, int]:
+        """从 LLM 响应中提取 (input_tokens, output_tokens)，自动处理各厂商字段名差异。
+        只提取不记录，可复用。"""
+        if not usage:
+            return 0, 0
+        input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        output_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+        return input_tokens, output_tokens
+
+    def record_from_response(self, usage: dict):
+        """从 LLM 响应中记录 token 用量。"""
+        inp, out = self._parse_usage(usage)
+        self.input_tokens += inp
+        self.output_tokens += out
 
     @property
     def total_tokens(self) -> int:
@@ -433,17 +454,15 @@ class TokenBudget:
 
     def get_warning(self) -> str:
         ratio = self.usage_ratio
-        warning_prefix = "⚠️"
         if ratio >= 0.9:
-            self._warning_issued = True
             return (
-                f"{warning_prefix} Token 预算即将耗尽（{self.total_tokens}/{self.max_tokens}，{ratio:.0%}）。"
+                f"⚠️ Token 预算即将耗尽（{self.total_tokens}/{self.max_tokens}，{ratio:.0%}）。"
                 f"请保持回复简洁，优先输出关键内容，尽快给出最终结论。"
             )
         if ratio >= self.warning_ratio and not self._warning_issued:
             self._warning_issued = True
             return (
-                f"{warning_prefix} Token 使用量已达 {ratio:.0%}（{self.total_tokens}/{self.max_tokens}）。"
+                f"⚠️ Token 使用量已达 {ratio:.0%}（{self.total_tokens}/{self.max_tokens}）。"
                 f"请注意控制输出长度。"
             )
         return ""

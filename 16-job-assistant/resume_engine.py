@@ -189,7 +189,7 @@ def customize_for_jd(base_resume: str, jd_reqs: JDRequirements) -> str:
 
 
 def _extract_agent_token_usage(messages: list) -> dict:
-    """从 Agent 消息中提取 API 返回的真实 token 用量。"""
+    """从 Agent 消息中提取 API 原始 token 用量（字段名归一化交给 TokenBudget）。"""
     usage = {"prompt_tokens": 0, "completion_tokens": 0}
     for msg in messages:
         if not isinstance(msg, AIMessage):
@@ -197,8 +197,8 @@ def _extract_agent_token_usage(messages: list) -> dict:
         meta = getattr(msg, "response_metadata", {}) or {}
         tu = meta.get("token_usage", {}) or meta.get("usage", {})
         if tu:
-            usage["prompt_tokens"] += tu.get("prompt_tokens", 0) or tu.get("input_tokens", 0)
-            usage["completion_tokens"] += tu.get("completion_tokens", 0) or tu.get("output_tokens", 0)
+            usage["prompt_tokens"] += tu.get("prompt_tokens") or tu.get("input_tokens") or 0
+            usage["completion_tokens"] += tu.get("completion_tokens") or tu.get("output_tokens") or 0
     return usage
 
 
