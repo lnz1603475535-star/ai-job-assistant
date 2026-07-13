@@ -16,6 +16,7 @@ from resume_engine import (
     generate_base_resume,
     customize_for_jd,
 )
+import core
 from core import load_and_index_documents, set_vectorstore
 from workflow import run_workflow
 
@@ -41,12 +42,12 @@ def test_full_pipeline():
     sample_resume_path = os.path.join(SAMPLE_DIR, "resume_zhangsan.txt")
     jd_path = os.path.join(SAMPLE_DIR, "jd_python_senior.txt")
 
-    vs, bm25, chunks = load_and_index_documents({
+    vs, chunks = load_and_index_documents({
         "user_experience": [os.path.join(DATA_DIR, "experience_bank.md")],
         "sample_resume": [sample_resume_path],
         "jd": [jd_path],
     })
-    set_vectorstore(vs, bm25, chunks)
+    set_vectorstore(vs, chunks)
     print(f"  已索引 {len(chunks)} 个文本块")
     print(f"  FAISS 索引：就绪 | BM25 索引：就绪")
 
@@ -135,7 +136,7 @@ def test_full_pipeline():
         ("JD 必备要求已提取", len(jd_reqs.must_have) > 0),
         ("基础简历已生成", len(base_resume) > 100),
         ("定制简历已生成", len(customized) > 100),
-        ("双索引就绪", vs is not None and bm25 is not None),
+        ("双索引就绪", vs is not None and core._bm25_index is not None),
     ]
 
     all_pass = True
@@ -168,12 +169,12 @@ def test_workflow():
     sample_resume_path = os.path.join(SAMPLE_DIR, "resume_zhangsan.txt")
     jd_path = os.path.join(SAMPLE_DIR, "jd_python_senior.txt")
 
-    vs, bm25, chunks = load_and_index_documents({
+    vs, chunks = load_and_index_documents({
         "user_experience": [os.path.join(DATA_DIR, "experience_bank.md")],
         "sample_resume": [sample_resume_path],
         "jd": [jd_path],
     })
-    set_vectorstore(vs, bm25, chunks)
+    set_vectorstore(vs, chunks)
     print(f"  已索引 {len(chunks)} 个文本块")
     print(f"  FAISS 索引：就绪 | BM25 索引：就绪")
 
@@ -246,7 +247,7 @@ def test_workflow():
         ("extract_jd：必备要求已提取", jd_reqs is not None and len(jd_reqs.must_have) > 0),
         ("generate_base：已生成", len(base) > 100),
         ("customize：已生成", len(customized) > 100),
-        ("双索引就绪", vs is not None and bm25 is not None),
+        ("双索引就绪", vs is not None and core._bm25_index is not None),
     ]
 
     all_pass = True

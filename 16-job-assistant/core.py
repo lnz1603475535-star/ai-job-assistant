@@ -69,16 +69,18 @@ _bm25_index = None
 _chunks_text: List[str] = []
 _chunks_metadata: List[dict] = []
 
-def set_vectorstore(vs, bm25=None, chunks=None):
-    """设置全局向量库实例，同时保存 BM25 索引和 chunk 元数据。"""
+def set_vectorstore(vs, chunks=None):
+    """设置全局向量库实例，BM25 由 chunks 自动构建，保证两者永远一致。"""
     global _vectorstore, _bm25_index, _chunks_text, _chunks_metadata
     _vectorstore = vs
-    _bm25_index = bm25
-    if chunks is not None:
+    if chunks:
         _chunks_text = [c.page_content for c in chunks]
         _chunks_metadata = [c.metadata for c in chunks]
-        if not chunks:
-            _bm25_index = None  # 空列表 → 清空 BM25，避免索引不匹配
+        _bm25_index = BM25Okapi([jieba.lcut(c.page_content) for c in chunks])
+    elif chunks is not None:
+        _chunks_text = []
+        _chunks_metadata = []
+        _bm25_index = None
 
 # ============================================================
 # 文档处理
@@ -294,7 +296,7 @@ def _load_file_to_documents(path: str) -> list[Document]:
             raise ValueError(f"文件读取失败（{os.path.basename(path)}）：{str(e)[:100]}")
 
 
-def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple[object, object, list[Document]]:
+def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple[object, list[Document]]:
     """加载多类型文档，切分，建立 FAISS + BM25 双索引。
 
     参数：
@@ -331,10 +333,7 @@ def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple[object, 
     embeddings = get_embeddings()
     vectorstore = FAISS.from_documents(chunks, embeddings)
 
-    # 建立 BM25 关键词索引（jieba 中文分词）
-    bm25 = BM25Okapi([jieba.lcut(c.page_content) for c in chunks])
-
-    return vectorstore, bm25, chunks
+    return vectorstore, chunks
 
 # ============================================================
 # 工具定义

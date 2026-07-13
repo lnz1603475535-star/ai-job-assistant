@@ -181,12 +181,12 @@ def index_documents_if_needed():
 
     with st.spinner("📚 正在索引文档..."):
         try:
-            vs, bm25, chunks = load_and_index_documents({
+            vs, chunks = load_and_index_documents({
                 "user_experience": [EXP_BANK_PATH],
                 "sample_resume": [st.session_state.resume_path],
                 "jd": [st.session_state.jd_path],
             })
-            set_vectorstore(vs, bm25, chunks)
+            set_vectorstore(vs, chunks)
             st.session_state.docs_indexed = True
             st.session_state.chunk_count = len(chunks)
             st.session_state.index_error = None
