@@ -5,6 +5,7 @@ AI 简历生成器 - 核心基础设施
 不包含任何业务逻辑——业务逻辑在 resume_engine.py 中。
 """
 
+import html as _html
 import os, re, warnings
 from typing import List
 
@@ -73,9 +74,8 @@ def set_vectorstore(vs, bm25=None, chunks=None):
     global _vectorstore, _bm25_index, _chunks_text, _chunks_metadata
     _vectorstore = vs
     _bm25_index = bm25
-    if chunks is not None:
-        _chunks_text = [c.page_content for c in chunks]
-        _chunks_metadata = [c.metadata for c in chunks]
+    _chunks_text = [c.page_content for c in chunks] if chunks else []
+    _chunks_metadata = [c.metadata for c in chunks] if chunks else []
 
 # ============================================================
 # 文档处理
@@ -127,61 +127,21 @@ def normalize_text(text: str) -> str:
 
 
 def load_file_content(path: str) -> str:
-    """加载文件文本内容，自动检测 .txt / .pdf 格式。
+    """加载文件文本内容，自动检测 .txt / .pdf / .docx / .md。
 
-    参数：
-        path：文件路径（支持 .txt、.pdf 和 .docx）
-
-    返回：
-        文件的完整文本内容（PDF 多页用双换行拼接）
+    委托给 _load_file_to_documents，避免重复文件检测和错误处理逻辑。
 
     Raises:
-        FileNotFoundError: 文件不存在
-        ValueError: 加密 / 扫描件无文字 / 文件损坏
+        ValueError: 加密 / 扫描件无文字 / 文件损坏（含中文提示）
     """
-    ext = os.path.splitext(path)[1].lower()
-    if ext == ".pdf":
-        try:
-            from pypdf.errors import FileNotDecryptedError, PdfReadError
-        except ImportError:
-            FileNotDecryptedError = Exception
-            PdfReadError = Exception
-        try:
-            docs = PyPDFLoader(path).load()
-        except FileNotDecryptedError:
-            raise ValueError("PDF 文件已加密，请移除密码后重新上传。")
-        except Exception as e:
-            error_msg = str(e).lower()
-            if "encrypt" in error_msg:
-                raise ValueError("PDF 文件已加密，请移除密码后重新上传。")
-            elif "corrupt" in error_msg or "not a pdf" in error_msg:
-                raise ValueError("PDF 文件已损坏或格式异常，请检查后重新上传。")
-            else:
-                raise ValueError(f"PDF 文件读取失败：{str(e)[:100]}")
-        text = normalize_text("\n\n".join(d.page_content for d in docs))
-        if not text.strip():
+    docs = _load_file_to_documents(path)
+    text = normalize_text("\n\n".join(d.page_content for d in docs))
+    if not text.strip():
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".pdf":
             raise ValueError("PDF 可能是扫描件，无法提取文字。请上传含文本的 PDF 或直接粘贴文字内容。")
-        return text
-    elif ext == ".docx":
-        try:
-            docs = Docx2txtLoader(path).load()
-            text = normalize_text("\n\n".join(d.page_content for d in docs))
-            if not text.strip():
-                raise ValueError("Word 文件内容为空，请检查后重新上传。")
-            return text
-        except Exception as e:
-            error_msg = str(e).lower()
-            if "encrypt" in error_msg or "password" in error_msg:
-                raise ValueError("Word 文件已加密，请移除密码后重新上传。")
-            elif "corrupt" in error_msg or "not a valid" in error_msg:
-                raise ValueError("Word 文件已损坏或格式异常，请检查后重新上传。")
-            else:
-                raise ValueError(f"Word 文件读取失败：{str(e)[:100]}")
-    else:
-        try:
-            return TextLoader(path, encoding="utf-8").load()[0].page_content
-        except UnicodeDecodeError:
-            raise ValueError("文件编码不支持，请保存为 UTF-8 编码后重新上传。")
+        raise ValueError("文件内容为空，请检查后重新上传。")
+    return text
 
 
 # ── URL 请求 ────────────────────────────────────────────
@@ -243,8 +203,7 @@ def _strip_html(html: str) -> str:
     html = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL | re.IGNORECASE)
     html = re.sub(r"</?(?:br|p|div|li|tr|h[1-6])[^>]*>", "\n", html, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", html)
-    text = text.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">")
-    text = text.replace("&amp;", "&").replace("&quot;", '"').replace("&#x27;", "'")
+    text = _html.unescape(text)
     text = re.sub(r"\n\s*\n", "\n\n", text)
     return text.strip()
 

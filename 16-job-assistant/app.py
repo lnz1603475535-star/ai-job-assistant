@@ -57,14 +57,23 @@ USER_TEXT_EXAMPLE = """我叫李思，邮箱 lisi@email.com，电话 13800002222
 # ============================================================
 
 def load_experience_bank() -> str:
-    """读取经验库文件内容。"""
+    """读取经验库文件内容，首次运行时自动创建。"""
+    if not os.path.exists(EXP_BANK_PATH):
+        default = "# 经验库\n\n在此粘贴你的项目经历，AI 生成简历时会参考这些内容。\n"
+        try:
+            os.makedirs(os.path.dirname(EXP_BANK_PATH), exist_ok=True)
+            with open(EXP_BANK_PATH, "w", encoding="utf-8") as f:
+                f.write(default)
+        except OSError:
+            pass
+        return default
     try:
-        if os.path.exists(EXP_BANK_PATH):
-            with open(EXP_BANK_PATH, "r", encoding="utf-8") as f:
-                return f.read()
-    except Exception:
-        pass
-    return "# 经验库\n\n在此粘贴你的项目经历，AI 生成简历时会参考这些内容。\n"
+        with open(EXP_BANK_PATH, "r", encoding="utf-8") as f:
+            content = f.read()
+        return content if content.strip() else "# 经验库\n\n在此粘贴你的项目经历。\n"
+    except (UnicodeDecodeError, OSError, PermissionError) as e:
+        st.error(f"经验库文件读取失败：{e}")
+        return "# 经验库\n\n（文件损坏，请手动检查或删除 data/experience_bank.md）\n"
 
 
 def initialize_session_state():
@@ -118,6 +127,37 @@ def save_uploaded_file(uploaded_file) -> tuple[str, str | None]:
     return path, None
 
 
+def _render_file_preview(state_key: str, label_prefix: str):
+    """通用文件预览组件。state_key: 'resume' 或 'jd'"""
+    path_key = f"{state_key}_path"
+    name_key = f"{state_key}_name"
+    path = st.session_state.get(path_key)
+    if not path:
+        return
+    st.info(f"{label_prefix} 当前选择：**{st.session_state.get(name_key, '')}**")
+    with st.expander(f"{label_prefix} 内容预览"):
+        try:
+            content = load_file_content(path)
+            if not content.strip():
+                st.warning("文件内容为空，请重新选择。")
+                st.session_state[path_key] = None
+                st.session_state[name_key] = None
+            else:
+                st.text(content[:600] + ("..." if len(content) > 600 else ""))
+        except ValueError as e:
+            st.error(str(e))
+            st.session_state[path_key] = None
+            st.session_state[name_key] = None
+        except FileNotFoundError:
+            st.warning("文件已被移动或删除，请重新选择。")
+            st.session_state[path_key] = None
+            st.session_state[name_key] = None
+        except (OSError, PermissionError):
+            st.error("无法读取文件，请检查文件权限后重试。")
+            st.session_state[path_key] = None
+            st.session_state[name_key] = None
+
+
 def validate_current_step() -> bool:
     """检查当前步骤是否可以前进。"""
     step = st.session_state.wizard_step
@@ -164,8 +204,6 @@ def index_documents_if_needed():
             else:
                 st.session_state.index_error = "unknown"
                 st.session_state.index_error_detail = str(e)[:200]
-        except FileNotFoundError:
-            st.session_state.index_error = "missing"
         except Exception as e:
             error_str = str(e).lower()
             if "empty" in error_str or "no text" in error_str:
@@ -299,29 +337,7 @@ def step_1_resume():
             st.toast(f"✅ 已选择：{choice}")
 
     # 当前选择提示
-    if st.session_state.resume_path:
-        st.info(f"📄 当前选择：**{st.session_state.resume_name}**")
-        with st.expander("📄 内容预览"):
-            try:
-                content = load_file_content(st.session_state.resume_path)
-                if not content.strip():
-                    st.warning("文件内容为空，请重新选择。")
-                    st.session_state.resume_path = None
-                    st.session_state.resume_name = None
-                else:
-                    st.text(content[:600] + ("..." if len(content) > 600 else ""))
-            except ValueError as e:
-                st.error(str(e))
-                st.session_state.resume_path = None
-                st.session_state.resume_name = None
-            except FileNotFoundError:
-                st.warning("文件已被移动或删除，请重新选择。")
-                st.session_state.resume_path = None
-                st.session_state.resume_name = None
-            except (OSError, PermissionError):
-                st.error("无法读取文件，请检查文件权限后重试。")
-                st.session_state.resume_path = None
-                st.session_state.resume_name = None
+    _render_file_preview("resume", "📄")
 
 
 # ============================================================
@@ -393,29 +409,7 @@ def step_2_jd():
             st.toast(f"✅ 已选择：{choice}")
 
     # 当前选择提示
-    if st.session_state.jd_path:
-        st.info(f"📋 当前选择：**{st.session_state.jd_name}**")
-        with st.expander("📋 内容预览"):
-            try:
-                content = load_file_content(st.session_state.jd_path)
-                if not content.strip():
-                    st.warning("文件内容为空，请重新选择。")
-                    st.session_state.jd_path = None
-                    st.session_state.jd_name = None
-                else:
-                    st.text(content[:600] + ("..." if len(content) > 600 else ""))
-            except ValueError as e:
-                st.error(str(e))
-                st.session_state.jd_path = None
-                st.session_state.jd_name = None
-            except FileNotFoundError:
-                st.warning("文件已被移动或删除，请重新选择。")
-                st.session_state.jd_path = None
-                st.session_state.jd_name = None
-            except (OSError, PermissionError):
-                st.error("无法读取文件，请检查文件权限后重试。")
-                st.session_state.jd_path = None
-                st.session_state.jd_name = None
+    _render_file_preview("jd", "📋")
 
 
 # ============================================================
@@ -516,6 +510,7 @@ def step_4_generate_preview():
 
                     errors = result.get("errors", [])
                     if errors:
+                        st.session_state.processing = False
                         for err in errors:
                             st.error(f"❌ {err}")
                     else:
