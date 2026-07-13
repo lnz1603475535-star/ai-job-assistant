@@ -74,8 +74,11 @@ def set_vectorstore(vs, bm25=None, chunks=None):
     global _vectorstore, _bm25_index, _chunks_text, _chunks_metadata
     _vectorstore = vs
     _bm25_index = bm25
-    _chunks_text = [c.page_content for c in chunks] if chunks else []
-    _chunks_metadata = [c.metadata for c in chunks] if chunks else []
+    if chunks is not None:
+        _chunks_text = [c.page_content for c in chunks]
+        _chunks_metadata = [c.metadata for c in chunks]
+        if not chunks:
+            _bm25_index = None  # 空列表 → 清空 BM25，避免索引不匹配
 
 # ============================================================
 # 文档处理
@@ -351,9 +354,12 @@ def search_documents(query: str, k: int = 4) -> str:
     if not query.strip():
         return "未提供搜索词。"
 
-    # FAISS 语义检索（MMR：相关性 + 多样性，避免返回重复内容）
+    _fetch_k = max(k * 5, len(_chunks_text))  # RRF 融合池大小
+
+    # FAISS + BM25 各取 _fetch_k 条进入 RRF 融合，最后截断到 k
+    _fetch_k = max(k * 5, min(len(_chunks_text), 20))
     faiss_docs = _vectorstore.max_marginal_relevance_search(
-        query, k=k, fetch_k=20
+        query, k=_fetch_k, fetch_k=20
     )
 
     # BM25 关键词检索（jieba 中文分词）
@@ -363,41 +369,48 @@ def search_documents(query: str, k: int = 4) -> str:
             range(len(bm25_scores)),
             key=lambda i: bm25_scores[i],
             reverse=True
-        )[:k]
+        )[:_fetch_k]
     else:
         bm25_top_indices = []
 
     # RRF 融合：Reciprocal Rank Fusion，k=60
-    # score(d) = sum(1/(K + rank_i(d)))，两路检索结果按排名加权融合
+    # 用 chunk 索引做 key，避免字符串内容微小差异导致融合作废
     K = 60
-    rrf_scores: dict[str, dict[str, float | str]] = {}  # content -> {"score": float, "doc_type": str}
+    rrf_scores: dict[int, dict[str, object]] = {}  # chunk_index -> {"score": float, "doc_type": str}
 
-    # FAISS 排名得分（rank 从 0 开始）
+    # 建立 FAISS 文档 → chunk 索引的反查表
+    _content_to_idx = {c: i for i, c in enumerate(_chunks_text)}
+
+    # FAISS 排名得分
     for rank, doc in enumerate(faiss_docs):
-        content = doc.page_content
-        rrf_scores[content] = {
+        idx = _content_to_idx.get(doc.page_content, -1)
+        if idx == -1:
+            continue  # FAISS 返回了不在当前索引中的文档，跳过
+        rrf_scores[idx] = {
             "score": 1.0 / (K + rank),
             "doc_type": doc.metadata.get("doc_type", "unknown"),
         }
 
-    # BM25 排名得分，与 FAISS 累加（同一文档被两路都找到时得分更高）
+    # BM25 排名得分，与 FAISS 累加
     for rank, idx in enumerate(bm25_top_indices):
-        content = _chunks_text[idx]
         score = 1.0 / (K + rank)
-        if content in rrf_scores:
-            rrf_scores[content]["score"] += score
+        if idx in rrf_scores:
+            rrf_scores[idx]["score"] += score
         else:
-            rrf_scores[content] = {
+            rrf_scores[idx] = {
                 "score": score,
                 "doc_type": _chunks_metadata[idx].get("doc_type", "unknown"),
             }
 
     # 按 RRF 得分降序排列，取 top-k
-    sorted_results = sorted(
+    sorted_indices = sorted(
         rrf_scores.items(), key=lambda x: x[1]["score"], reverse=True
     )[:k]
 
-    merged = [f"[{meta['doc_type']}] {content}" for content, meta in sorted_results]
+    merged = []
+    for idx, meta in sorted_indices:
+        content = _chunks_text[idx]
+        merged.append(f"[{meta['doc_type']}] {content}")
 
     if not merged:
         return "未找到相关文档。"
