@@ -19,6 +19,9 @@ from prompts import (
 )
 from core import llm, search_documents, load_file_content
 
+# 缓存最近一次 Agent 调用的 token 用量
+_last_agent_token_usage: dict = {}
+
 
 # ============================================================
 # 1. 用户信息提取
@@ -143,25 +146,16 @@ def generate_base_resume(user: UserProfile, style: StyleProfile) -> str:
 # 5. JD 定制优化
 # ============================================================
 
-def customize_for_jd(base_resume: str, jd_reqs: JDRequirements,
-                     token_warning: str = "") -> str:
-    """根据 JD 要求定制简历。
-
-    技术：使用 create_agent + search_documents tool。
-    为什么需要 Agent？定制过程中可能需要从已索引的用户信息文档中
-    检索更多细节来支持改写。例如 JD 要求"高并发经验"，Agent 可以
-    搜索用户文档看看有没有相关经历可以展开描述。
+def customize_for_jd(base_resume: str, jd_reqs: JDRequirements) -> str:
+    """根据 JD 要求定制简历。返回定制后的 Markdown 文本。
 
     参数：
         base_resume：generate_base_resume 生成的基础简历（Markdown）
         jd_reqs：extract_jd_requirements 提取的 JD 结构化要求
-        token_warning：Token 预算警告文本（空字符串表示预算充足）
     返回：
         定制后的 Markdown 格式简历
     """
-    system_prompt = (
-        (token_warning + "\n\n") if token_warning else ""
-    ) + JD_CUSTOMIZE_SYSTEM_PROMPT
+    system_prompt = JD_CUSTOMIZE_SYSTEM_PROMPT
 
     agent = create_agent(
         model=llm,
@@ -182,9 +176,32 @@ def customize_for_jd(base_resume: str, jd_reqs: JDRequirements,
         ))]
     })
 
-    # 提取最终 AI 回复
     ai_messages = [
         m for m in result["messages"]
         if isinstance(m, AIMessage) and m.content
     ]
+
+    # 缓存本次 token 用量
+    global _last_agent_token_usage
+    _last_agent_token_usage = _extract_agent_token_usage(result["messages"])
+
     return ai_messages[-1].content if ai_messages else base_resume
+
+
+def _extract_agent_token_usage(messages: list) -> dict:
+    """从 Agent 消息中提取 API 返回的真实 token 用量。"""
+    usage = {"prompt_tokens": 0, "completion_tokens": 0}
+    for msg in messages:
+        if not isinstance(msg, AIMessage):
+            continue
+        meta = getattr(msg, "response_metadata", {}) or {}
+        tu = meta.get("token_usage", {}) or meta.get("usage", {})
+        if tu:
+            usage["prompt_tokens"] += tu.get("prompt_tokens", 0) or tu.get("input_tokens", 0)
+            usage["completion_tokens"] += tu.get("completion_tokens", 0) or tu.get("output_tokens", 0)
+    return usage
+
+
+def get_last_token_usage() -> dict:
+    """返回最近一次 customize_for_jd 调用的真实 token 用量。"""
+    return _last_agent_token_usage

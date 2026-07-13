@@ -13,13 +13,13 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
 from models import UserProfile, StyleProfile, JDRequirements
-from core import TokenBudget
 from resume_engine import (
     parse_user_info,
     extract_style,
     extract_jd_requirements,
     generate_base_resume,
     customize_for_jd,
+    get_last_token_usage,
 )
 
 
@@ -92,26 +92,13 @@ def node_generate_base(state: WorkflowState) -> dict[str, object]:
 
 
 def node_customize(state: WorkflowState) -> dict[str, object]:
-    """节点 6：JD 定制优化（带 Token 预算监控）。"""
-    budget = TokenBudget()
-
-    # 计入输入消耗
-    base = state.get("base_resume", "")
-    jd = state.get("jd_requirements")
-    if jd:
-        budget.add_usage(jd.model_dump_json(ensure_ascii=False))
-    budget.add_usage(base)
-
-    warning = budget.get_warning()
+    """节点 6：JD 定制优化。"""
     result = customize_for_jd(
         state["base_resume"],
         state["jd_requirements"],
-        token_warning=warning,
     )
-
-    # 记录输出消耗
-    budget.add_usage(result)
-
+    # 记录真实 token 消耗（后续成本控制的基础数据）
+    usage = get_last_token_usage()
     return {"customized_resume": result}
 
 

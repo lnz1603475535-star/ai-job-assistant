@@ -69,15 +69,15 @@ _bm25_index = None
 _chunks_text: List[str] = []
 _chunks_metadata: List[dict] = []
 
-def set_vectorstore(vs, chunks=None):
-    """设置全局向量库实例，BM25 由 chunks 自动构建，保证两者永远一致。"""
+def set_vectorstore(vs, chunks):
+    """设置全局向量库实例，BM25 由 chunks 自动构建，保证三者永远一致。"""
     global _vectorstore, _bm25_index, _chunks_text, _chunks_metadata
     _vectorstore = vs
     if chunks:
         _chunks_text = [c.page_content for c in chunks]
         _chunks_metadata = [c.metadata for c in chunks]
         _bm25_index = BM25Okapi([jieba.lcut(c.page_content) for c in chunks])
-    elif chunks is not None:
+    else:
         _chunks_text = []
         _chunks_metadata = []
         _bm25_index = None
@@ -137,7 +137,7 @@ def load_file_content(path: str) -> str:
     委托给 _load_file_to_documents，避免重复文件检测和错误处理逻辑。
 
     Raises:
-        ValueError: 加密 / 扫描件无文字 / 文件损坏（含中文提示）
+        ValueError: 加密 / 扫描件无文字 / 文件损坏
     """
     docs = _load_file_to_documents(path)
     text = normalize_text("\n\n".join(d.page_content for d in docs))
@@ -330,6 +330,9 @@ def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple[object, 
     if not chunks:
         raise ValueError("文档切分后无有效内容，请检查文件是否只有空白字符。")
 
+    for i, doc in enumerate(chunks):
+        doc.metadata["_chunk_idx"] = i
+
     embeddings = get_embeddings()
     vectorstore = FAISS.from_documents(chunks, embeddings)
 
@@ -353,12 +356,10 @@ def search_documents(query: str, k: int = 4) -> str:
     if not query.strip():
         return "未提供搜索词。"
 
-    _fetch_k = max(k * 5, len(_chunks_text))  # RRF 融合池大小
-
     # FAISS + BM25 各取 _fetch_k 条进入 RRF 融合，最后截断到 k
     _fetch_k = max(k * 5, min(len(_chunks_text), 20))
     faiss_docs = _vectorstore.max_marginal_relevance_search(
-        query, k=_fetch_k, fetch_k=20
+        query, k=_fetch_k, fetch_k=max(_fetch_k * 2, 40)
     )
 
     # BM25 关键词检索（jieba 中文分词）
@@ -375,41 +376,28 @@ def search_documents(query: str, k: int = 4) -> str:
     # RRF 融合：Reciprocal Rank Fusion，k=60
     # 用 chunk 索引做 key，避免字符串内容微小差异导致融合作废
     K = 60
-    rrf_scores: dict[int, dict[str, object]] = {}  # chunk_index -> {"score": float, "doc_type": str}
+    rrf_scores: dict[int, float] = {}  # chunk_index → 累计 RRF 得分
 
-    # 建立 FAISS 文档 → chunk 索引的反查表
-    _content_to_idx = {c: i for i, c in enumerate(_chunks_text)}
-
-    # FAISS 排名得分
+    # FAISS 排名得分（用 _chunk_idx 元数据，避免字符串微小差异导致匹配失败）
     for rank, doc in enumerate(faiss_docs):
-        idx = _content_to_idx.get(doc.page_content, -1)
-        if idx == -1:
-            continue  # FAISS 返回了不在当前索引中的文档，跳过
-        rrf_scores[idx] = {
-            "score": 1.0 / (K + rank),
-            "doc_type": doc.metadata.get("doc_type", "unknown"),
-        }
+        idx = doc.metadata.get("_chunk_idx", -1)
+        if idx == -1 or idx >= len(_chunks_text):
+            continue
+        rrf_scores[idx] = 1.0 / (K + rank)
 
     # BM25 排名得分，与 FAISS 累加
     for rank, idx in enumerate(bm25_top_indices):
         score = 1.0 / (K + rank)
-        if idx in rrf_scores:
-            rrf_scores[idx]["score"] += score
-        else:
-            rrf_scores[idx] = {
-                "score": score,
-                "doc_type": _chunks_metadata[idx].get("doc_type", "unknown"),
-            }
+        rrf_scores[idx] = rrf_scores.get(idx, 0.0) + score
 
     # 按 RRF 得分降序排列，取 top-k
-    sorted_indices = sorted(
-        rrf_scores.items(), key=lambda x: x[1]["score"], reverse=True
-    )[:k]
+    sorted_indices = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
     merged = []
-    for idx, meta in sorted_indices:
+    for idx, score in sorted_indices:
         content = _chunks_text[idx]
-        merged.append(f"[{meta['doc_type']}] {content}")
+        doc_type = _chunks_metadata[idx].get("doc_type", "unknown")
+        merged.append(f"[{doc_type}] {content}")
 
     if not merged:
         return "未找到相关文档。"
@@ -417,93 +405,54 @@ def search_documents(query: str, k: int = 4) -> str:
     return "\n\n---\n\n".join(merged)
 
 # ============================================================
-# 通用工具函数
-# ============================================================
-
-def parse_experience(level_text: str) -> dict[str, int | str | None]:
-    """从水平描述中提取结构化信息。
-
-    支持的格式：
-      - "5年" / "5年以上" / "5年+" → {"years": 5, "label": "5年以上"}
-      - "2-3年" → {"years": 3, "label": "2-3年"}（取上限）
-      - "精通（5年）" → {"years": 5, "label": "精通（5年）"}
-      - "精通" / "熟悉" / "了解" → {"years": None, "label": "精通"}
-
-    返回 dict: {"years": int|None, "label": str}
-    """
-    text = level_text.strip()
-
-    # 1. 匹配 "X-Y年" 或 "X至Y年"（取上限 Y）
-    m = re.search(r'(\d+)\s*[-–—至到]\s*(\d+)\s*年?', text)
-    if m:
-        return {"years": int(m.group(2)), "label": text}
-
-    # 2. 匹配单独数字
-    m = re.search(r'(\d+)\s*年?', text)
-    if m:
-        return {"years": int(m.group(1)), "label": text}
-
-    # 3. 纯文字描述
-    return {"years": None, "label": text}
-
-# ============================================================
-# Token 预算控制
+# Token 预算控制（基于 API 返回的真实 token 计数）
 # ============================================================
 
 class TokenBudget:
-    """Token 预算跟踪器，基于字符数估算 Token 使用量。
-
-    估算方法（保守估算）：
-    - 中文字符：约 1 token / 1.5 字符
-    - 非中文字符（英文、数字、标点、空格）：约 1 token / 3.5 字符
+    """Token 预算跟踪器，从 API 响应的 usage_metadata 中提取真实 token 用量。
+    用法：在 workflow 中创建 budget 并传给 customize_for_jd。
+    LLM 响应的 response_metadata["token_usage"] 包含真实的 input/output token 数。
     """
 
-    def __init__(self, max_tokens: int = 8000, warning_threshold: float = 0.7):
+    def __init__(self, max_tokens: int = 8000, warning_ratio: float = 0.7):
         self.max_tokens = max_tokens
-        self.warning_threshold = warning_threshold
-        self._used = 0
+        self.warning_ratio = warning_ratio
+        self.input_tokens = 0
+        self.output_tokens = 0
         self._warning_issued = False
 
-    def estimate_tokens(self, text: str) -> int:
-        """估算文本的 token 数量。"""
-        if not text:
-            return 0
-        chinese = len(re.findall(r'[\u4e00-\u9fff\uff00-\uffef]', text))
-        other = len(text) - chinese
-        return int(chinese / 1.5 + other / 3.5) + 1  # +1 安全边界
-
-    def add_usage(self, text: str) -> int:
-        """记录 token 使用量，返回本次增加的 token 估算数。"""
-        tokens = self.estimate_tokens(text)
-        self._used += tokens
-        return tokens
-
     @property
-    def used_tokens(self) -> int:
-        return self._used
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
 
     @property
     def usage_ratio(self) -> float:
         if self.max_tokens == 0:
             return 0.0
-        return self._used / self.max_tokens
+        return self.total_tokens / self.max_tokens
 
     def get_warning(self) -> str:
-        """超过阈值时返回警告文本，否则返回空字符串。每个预算只警告一次。"""
         ratio = self.usage_ratio
+        warning_prefix = "⚠️"
         if ratio >= 0.9:
             self._warning_issued = True
             return (
-                f"⚠️ Token 预算即将耗尽（{self._used}/{self.max_tokens}，{ratio:.0%}）。"
+                f"{warning_prefix} Token 预算即将耗尽（{self.total_tokens}/{self.max_tokens}，{ratio:.0%}）。"
                 f"请保持回复简洁，优先输出关键内容，尽快给出最终结论。"
             )
-        if ratio >= self.warning_threshold and not self._warning_issued:
+        if ratio >= self.warning_ratio and not self._warning_issued:
             self._warning_issued = True
             return (
-                f"⚠️ Token 使用量已达 {ratio:.0%}（{self._used}/{self.max_tokens}）。"
+                f"{warning_prefix} Token 使用量已达 {ratio:.0%}（{self.total_tokens}/{self.max_tokens}）。"
                 f"请注意控制输出长度。"
             )
         return ""
+
+    def get_usage_report(self) -> str:
+        return (
+            f"Token 用量：输入 {self.input_tokens} + 输出 {self.output_tokens}"
+            f" = {self.total_tokens} / {self.max_tokens}（{self.usage_ratio:.0%}）"
+        )
 
 
 
