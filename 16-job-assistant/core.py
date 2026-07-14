@@ -369,7 +369,7 @@ def _load_file_to_documents(path: str) -> list[Document]:
     try:
         file_size = os.path.getsize(path)
     except OSError as e:
-        raise ValueError(f"文件不存在或无法访问：{os.path.basename(path)}")
+        raise ValueError(f"文件不存在或无法访问：{os.path.basename(path)}") from e
     if file_size > _MAX_FILE_SIZE:
         raise ValueError(
             f"文件过大（{file_size / 1024 / 1024:.1f}MB），请压缩后再上传。"
@@ -385,11 +385,11 @@ def _load_file_to_documents(path: str) -> list[Document]:
     except Exception as e:
         error_msg = str(e).lower()
         if "encrypt" in error_msg or "password" in error_msg:
-            raise ValueError(f"文件已加密，无法读取：{os.path.basename(path)}")
+            raise ValueError(f"文件已加密，无法读取：{os.path.basename(path)}") from e
         elif "corrupt" in error_msg or "not a pdf" in error_msg or "not a valid" in error_msg:
-            raise ValueError(f"文件已损坏或格式异常：{os.path.basename(path)}")
+            raise ValueError(f"文件已损坏或格式异常：{os.path.basename(path)}") from e
         else:
-            raise ValueError(f"文件读取失败（{os.path.basename(path)}）：{str(e)[:100]}")
+            raise ValueError(f"文件读取失败（{os.path.basename(path)}）：{str(e)[:100]}") from e
 
 
 def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple[object, list[Document]]:
