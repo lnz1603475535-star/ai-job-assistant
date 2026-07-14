@@ -9,6 +9,9 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
+from core import setup_logging
+setup_logging()
+
 from resume_engine import (
     parse_user_info,
     extract_style,

@@ -35,17 +35,95 @@ from rank_bm25 import BM25Okapi
 # 日志配置
 # ============================================================
 
-_log_dir = os.path.join(os.path.dirname(__file__), "data")
-os.makedirs(_log_dir, exist_ok=True)
+import atexit
+from logging.handlers import RotatingFileHandler
+from typing import Set
 
-logging.basicConfig(
-    level=logging.WARNING,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(os.path.join(_log_dir, "app.log"), encoding="utf-8"),
-    ],
-)
+_log_initialized = False
+
+
+class SensitiveFilter(logging.Filter):
+    """日志敏感信息脱敏：API key、手机号、邮箱。"""
+
+    _patterns = [
+        (r"sk-[a-zA-Z0-9_-]{20,}", "sk-***"),
+        (r"1[3-9]\d{9}", "138****0000"),
+        (r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", "***@***.***"),
+    ]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if hasattr(record, "msg") and isinstance(record.msg, str):
+            for pattern, replacement in self._patterns:
+                record.msg = re.sub(pattern, replacement, record.msg)
+            if record.args and isinstance(record.args, tuple):
+                record.args = tuple(
+                    re.sub(pattern, replacement, str(a)) if isinstance(a, str) else a
+                    for a in record.args
+                    for pattern, replacement in self._patterns
+                )
+        return True
+
+
+def setup_logging() -> None:
+    """配置日志系统（幂等调用——多次调用不会重复注册）。
+
+    - 控制台：WARNING+，简洁格式
+    - data/app.log：DEBUG+，含行号定位信息，RotatingFileHandler 10MB×3
+    - 第三方库噪音静音（httpx / urllib3 / openai / langchain 等）
+    - 敏感信息自动脱敏（API key / 手机号 / 邮箱）
+    """
+    global _log_initialized
+    if _log_initialized:
+        return
+
+    _log_dir = os.path.join(os.path.dirname(__file__), "data")
+    os.makedirs(_log_dir, exist_ok=True)
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+
+    # 控制台 handler：WARNING+
+    console = logging.StreamHandler()
+    console.setLevel(logging.WARNING)
+    console.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)-5s] %(name)s: %(message)s",
+        datefmt="%m-%d %H:%M:%S",
+    ))
+    console.addFilter(SensitiveFilter())
+    root.addHandler(console)
+
+    # 文件 handler：DEBUG+，含定位信息，自动轮转
+    file_handler = RotatingFileHandler(
+        os.path.join(_log_dir, "app.log"),
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=3,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)-5s] %(name)s:%(lineno)d %(funcName)s() — %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    file_handler.addFilter(SensitiveFilter())
+    root.addHandler(file_handler)
+
+    # 第三方库静音
+    _noisy_libs = [
+        "httpx", "httpcore", "urllib3",
+        "openai", "openai._base_client",
+        "langchain_core", "langchain", "langgraph",
+        "huggingface_hub", "transformers",
+        "filelock", "fsspec", "tqdm",
+    ]
+    for name in _noisy_libs:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+    _log_initialized = True
+    logging.getLogger(__name__).info("日志系统已初始化")
+
+    # 确保程序退出时刷新所有 handler
+    atexit.register(logging.shutdown)
+
 
 load_dotenv(find_dotenv())
 

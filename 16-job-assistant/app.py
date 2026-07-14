@@ -17,6 +17,7 @@ from core import (
     llm,
     load_file_content,
     fetch_url_content,
+    setup_logging,
 )
 from workflow import run_workflow
 from resume_engine import parse_user_info
@@ -740,6 +741,8 @@ def render_sidebar():
 # ============================================================
 
 def main():
+    setup_logging()
+
     st.set_page_config(
         page_title="AI 简历生成器",
         page_icon="📝",
