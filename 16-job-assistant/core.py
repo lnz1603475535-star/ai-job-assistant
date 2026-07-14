@@ -157,6 +157,7 @@ def get_embeddings():
 
 # ============================================================
 # 全局向量库状态
+# TODO: FastAPI 阶段重构为类实例，消除模块级全局状态（#13 #14）
 # ============================================================
 
 _vectorstore = None
@@ -392,6 +393,7 @@ def _load_file_to_documents(path: str) -> list[Document]:
 
 
 def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple[object, list[Document]]:
+    # TODO: FastAPI 阶段自动调用 set_vectorstore()，消除调用方遗漏风险（#14）
     """加载多类型文档，切分，建立 FAISS + BM25 双索引。
 
     参数：
