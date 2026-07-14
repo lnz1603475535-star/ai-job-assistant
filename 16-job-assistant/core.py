@@ -503,8 +503,9 @@ def search_documents(query: str, k: int = 4) -> str:
 
 class TokenBudget:
     """Token 预算跟踪器，从 API 响应的 usage_metadata 中提取真实 token 用量。
-    用法：在 workflow 中创建 budget 并传给 customize_for_jd。
-    LLM 响应的 response_metadata["token_usage"] 包含真实的 input/output token 数。
+
+    TODO: 后端阶段在 workflow 中实例化，接入 node_customize 的 token_usage 数据。
+    当前 _parse_usage 已被 _extract_agent_token_usage 复用，实例尚未创建。
     """
 
     def __init__(self, max_tokens: int = 15000, warning_ratio: float = 0.7):

@@ -19,7 +19,7 @@ from prompts import (
     BASE_RESUME_PROMPT,
     JD_CUSTOMIZE_SYSTEM_PROMPT,
 )
-from core import llm, search_documents, load_file_content
+from core import llm, search_documents, load_file_content, TokenBudget
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +200,11 @@ def customize_for_jd(base_resume: str, jd_reqs: JDRequirements) -> str:
 
 
 def _extract_agent_token_usage(messages: list) -> dict:
-    """从 Agent 消息中提取 API 原始 token 用量（字段名归一化交给 TokenBudget）。"""
+    """从 Agent 消息中提取 API 原始 token 用量。
+
+    字段名归一化委托给 TokenBudget._parse_usage——各厂商字段名差异
+    只在 _parse_usage 中维护，不在此处重复。
+    """
     usage = {"prompt_tokens": 0, "completion_tokens": 0}
     for msg in messages:
         if not isinstance(msg, AIMessage):
@@ -208,14 +212,9 @@ def _extract_agent_token_usage(messages: list) -> dict:
         meta = getattr(msg, "response_metadata", {}) or {}
         tu = meta.get("token_usage", {}) or meta.get("usage", {})
         if tu:
-            usage["prompt_tokens"] += (
-                tu["prompt_tokens"] if "prompt_tokens" in tu
-                else tu.get("input_tokens", 0)
-            )
-            usage["completion_tokens"] += (
-                tu["completion_tokens"] if "completion_tokens" in tu
-                else tu.get("output_tokens", 0)
-            )
+            input_t, output_t = TokenBudget._parse_usage(tu)
+            usage["prompt_tokens"] += input_t
+            usage["completion_tokens"] += output_t
     return usage
 
 
