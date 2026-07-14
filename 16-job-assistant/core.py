@@ -430,8 +430,14 @@ class TokenBudget:
         只提取不记录，可复用。"""
         if not usage:
             return 0, 0
-        input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
-        output_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+        input_tokens = (
+            usage["prompt_tokens"] if "prompt_tokens" in usage
+            else usage.get("input_tokens", 0)
+        )
+        output_tokens = (
+            usage["completion_tokens"] if "completion_tokens" in usage
+            else usage.get("output_tokens", 0)
+        )
         return input_tokens, output_tokens
 
     def record_from_response(self, usage: dict):

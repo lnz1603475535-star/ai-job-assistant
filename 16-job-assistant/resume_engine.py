@@ -197,8 +197,14 @@ def _extract_agent_token_usage(messages: list) -> dict:
         meta = getattr(msg, "response_metadata", {}) or {}
         tu = meta.get("token_usage", {}) or meta.get("usage", {})
         if tu:
-            usage["prompt_tokens"] += tu.get("prompt_tokens") or tu.get("input_tokens") or 0
-            usage["completion_tokens"] += tu.get("completion_tokens") or tu.get("output_tokens") or 0
+            usage["prompt_tokens"] += (
+                tu["prompt_tokens"] if "prompt_tokens" in tu
+                else tu.get("input_tokens", 0)
+            )
+            usage["completion_tokens"] += (
+                tu["completion_tokens"] if "completion_tokens" in tu
+                else tu.get("output_tokens", 0)
+            )
     return usage
 
 
