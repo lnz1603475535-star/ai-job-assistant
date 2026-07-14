@@ -6,6 +6,7 @@ AI 简历生成器 - 核心基础设施
 """
 
 import html as _html
+import logging
 import os, re, warnings
 from typing import List
 
@@ -29,6 +30,22 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
+
+# ============================================================
+# 日志配置
+# ============================================================
+
+_log_dir = os.path.join(os.path.dirname(__file__), "data")
+os.makedirs(_log_dir, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(os.path.join(_log_dir, "app.log"), encoding="utf-8"),
+    ],
+)
 
 load_dotenv(find_dotenv())
 

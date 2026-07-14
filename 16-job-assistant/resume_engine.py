@@ -5,6 +5,8 @@ AI 简历生成器 - 引擎模块
 从用户输入到生成定制简历的完整链路。
 """
 
+import logging
+
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain.agents import create_agent
@@ -18,6 +20,8 @@ from prompts import (
     JD_CUSTOMIZE_SYSTEM_PROMPT,
 )
 from core import llm, search_documents, load_file_content
+
+logger = logging.getLogger(__name__)
 
 # 缓存最近一次 Agent 调用的 token 用量
 _last_agent_token_usage: dict = {}
@@ -47,7 +51,7 @@ def parse_user_info(text: str) -> UserProfile:
     try:
         return chain.invoke({"user_text": text})
     except Exception:
-        # Pydantic 解析失败时返回空画像
+        logger.exception("用户信息解析失败")
         return UserProfile(
             name="", contact="", skills=[], experience=[], education=""
         )
@@ -69,8 +73,6 @@ def extract_style(sample_path: str) -> StyleProfile:
     返回：
         StyleProfile 结构化对象
     """
-    resume_text = load_file_content(sample_path)
-
     parser = PydanticOutputParser(pydantic_object=StyleProfile)
     prompt = STYLE_EXTRACTION_PROMPT.partial(
         format_instructions=parser.get_format_instructions()
@@ -78,8 +80,10 @@ def extract_style(sample_path: str) -> StyleProfile:
     chain = prompt | llm | parser
 
     try:
+        resume_text = load_file_content(sample_path)
         return chain.invoke({"resume_text": resume_text})
     except Exception:
+        logger.exception("风格提取失败: %s", sample_path)
         return StyleProfile(
             structure="个人信息 → 技能 → 工作经历 → 教育",
             tone="简洁专业",
@@ -101,8 +105,6 @@ def extract_jd_requirements(jd_path: str) -> JDRequirements:
     返回：
         JDRequirements 结构化对象
     """
-    jd_text = load_file_content(jd_path)
-
     parser = PydanticOutputParser(pydantic_object=JDRequirements)
     prompt = JD_REQUIREMENTS_PROMPT.partial(
         format_instructions=parser.get_format_instructions()
@@ -110,8 +112,10 @@ def extract_jd_requirements(jd_path: str) -> JDRequirements:
     chain = prompt | llm | parser
 
     try:
+        jd_text = load_file_content(jd_path)
         return chain.invoke({"jd_text": jd_text})
     except Exception:
+        logger.exception("JD 要求提取失败: %s", jd_path)
         return JDRequirements(
             title="未知岗位", must_have=[], nice_to_have=[],
             keywords=[], hidden_preferences=""
@@ -135,11 +139,15 @@ def generate_base_resume(user: UserProfile, style: StyleProfile) -> str:
         Markdown 格式的简历文本
     """
     chain = BASE_RESUME_PROMPT | llm
-    result = chain.invoke({
-        "user_profile": user.model_dump_json(indent=2, ensure_ascii=False),
-        "style_profile": style.model_dump_json(indent=2, ensure_ascii=False),
-    })
-    return result.content
+    try:
+        result = chain.invoke({
+            "user_profile": user.model_dump_json(indent=2, ensure_ascii=False),
+            "style_profile": style.model_dump_json(indent=2, ensure_ascii=False),
+        })
+        return result.content
+    except Exception:
+        logger.exception("基础简历生成失败")
+        return ""
 
 
 # ============================================================
@@ -155,37 +163,39 @@ def customize_for_jd(base_resume: str, jd_reqs: JDRequirements) -> str:
     返回：
         定制后的 Markdown 格式简历
     """
-    system_prompt = JD_CUSTOMIZE_SYSTEM_PROMPT
-
     agent = create_agent(
         model=llm,
         tools=[search_documents],
-        system_prompt=system_prompt,
+        system_prompt=JD_CUSTOMIZE_SYSTEM_PROMPT,
     )
 
-    result = agent.invoke({
-        "messages": [HumanMessage(content=(
-            f"根据以下 JD 要求，优化这份简历：\n\n"
-            f"=== JD 要求 ===\n"
-            f"岗位：{jd_reqs.title}\n"
-            f"必备要求：{', '.join(jd_reqs.must_have)}\n"
-            f"加分项：{', '.join(jd_reqs.nice_to_have)}\n"
-            f"关键词：{', '.join(jd_reqs.keywords)}\n"
-            f"隐性偏好：{jd_reqs.hidden_preferences}\n\n"
-            f"=== 简历原文 ===\n{base_resume}"
-        ))]
-    })
+    user_message = HumanMessage(content=(
+        f"根据以下 JD 要求，优化这份简历：\n\n"
+        f"=== JD 要求 ===\n"
+        f"岗位：{jd_reqs.title}\n"
+        f"必备要求：{', '.join(jd_reqs.must_have)}\n"
+        f"加分项：{', '.join(jd_reqs.nice_to_have)}\n"
+        f"关键词：{', '.join(jd_reqs.keywords)}\n"
+        f"隐性偏好：{jd_reqs.hidden_preferences}\n\n"
+        f"=== 简历原文 ===\n{base_resume}"
+    ))
 
-    ai_messages = [
-        m for m in result["messages"]
-        if isinstance(m, AIMessage) and m.content
-    ]
+    try:
+        result = agent.invoke({"messages": [user_message]})
 
-    # 缓存本次 token 用量
-    global _last_agent_token_usage
-    _last_agent_token_usage = _extract_agent_token_usage(result["messages"])
+        ai_messages = [
+            m for m in result["messages"]
+            if isinstance(m, AIMessage) and m.content
+        ]
 
-    return ai_messages[-1].content if ai_messages else base_resume
+        # 缓存本次 token 用量
+        global _last_agent_token_usage
+        _last_agent_token_usage = _extract_agent_token_usage(result["messages"])
+
+        return ai_messages[-1].content if ai_messages else base_resume
+    except Exception:
+        logger.exception("JD 定制优化失败")
+        return base_resume
 
 
 def _extract_agent_token_usage(messages: list) -> dict:
