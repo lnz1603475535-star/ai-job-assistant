@@ -24,6 +24,7 @@ from core import llm, search_documents, load_file_content
 logger = logging.getLogger(__name__)
 
 # 缓存最近一次 Agent 调用的 token 用量
+# TODO: 后端阶段拆除全局变量，token 用量改为通过 workflow state 传递
 _last_agent_token_usage: dict = {}
 
 
@@ -219,5 +220,8 @@ def _extract_agent_token_usage(messages: list) -> dict:
 
 
 def get_last_token_usage() -> dict:
-    """返回最近一次 customize_for_jd 调用的真实 token 用量。"""
+    """返回最近一次 customize_for_jd 调用的真实 token 用量。
+
+    TODO: 后端阶段接入 TokenBudget 后，此函数改为从 TokenBudget 实例读取累计值。
+    """
     return _last_agent_token_usage

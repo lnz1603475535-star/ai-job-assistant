@@ -50,6 +50,7 @@ class WorkflowState(TypedDict, total=False):
     jd_requirements: JDRequirements
     base_resume: str
     customized_resume: str
+    token_usage: dict  # TODO: 后端阶段接入 TokenBudget 进行成本控制
     errors: list[str]  # 不用 operator.add：每次 node_validate_inputs 返回全新错误列表，覆盖旧值
 
 
@@ -109,9 +110,11 @@ def node_customize(state: WorkflowState) -> dict[str, object]:
         state["base_resume"],
         state["jd_requirements"],
     )
-    # 记录真实 token 消耗（后续成本控制的基础数据）
-    usage = get_last_token_usage()
-    return {"customized_resume": result}
+    # 记录真实 token 消耗（TODO: 后端阶段接入 TokenBudget 进行成本控制）
+    return {
+        "customized_resume": result,
+        "token_usage": get_last_token_usage(),
+    }
 
 
 # ============================================================
