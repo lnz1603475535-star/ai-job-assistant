@@ -23,6 +23,18 @@ from resume_engine import (
 )
 
 
+# MemorySaver 单例——断点恢复依赖同一实例跨请求保持状态
+_checkpointer = None
+
+
+def get_checkpointer() -> MemorySaver:
+    """获取 MemorySaver 单例（首次调用时创建）。"""
+    global _checkpointer
+    if _checkpointer is None:
+        _checkpointer = MemorySaver()
+    return _checkpointer
+
+
 # ============================================================
 # State
 # ============================================================
@@ -141,9 +153,8 @@ def build_workflow() -> CompiledStateGraph:
     graph.add_edge("generate_base", "customize")
     graph.add_edge("customize", END)
 
-    # 编译（带 checkpointer，支持断点恢复）
-    checkpointer = MemorySaver()
-    return graph.compile(checkpointer=checkpointer)
+    # 编译（单例 checkpointer，支持跨请求断点恢复）
+    return graph.compile(checkpointer=get_checkpointer())
 
 
 # ============================================================
