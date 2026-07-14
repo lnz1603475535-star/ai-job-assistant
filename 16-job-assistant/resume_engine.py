@@ -202,20 +202,18 @@ def customize_for_jd(base_resume: str, jd_reqs: JDRequirements) -> str:
 def _extract_agent_token_usage(messages: list) -> dict:
     """从 Agent 消息中提取 API 原始 token 用量。
 
-    字段名归一化委托给 TokenBudget._parse_usage——各厂商字段名差异
-    只在 _parse_usage 中维护，不在此处重复。
+    从后往前取最后一条带 token_usage 的 AIMessage（最终响应），
+    避免中间 tool-call 消息的 usage 被重复累加。
     """
-    usage = {"prompt_tokens": 0, "completion_tokens": 0}
-    for msg in messages:
+    for msg in reversed(messages):
         if not isinstance(msg, AIMessage):
             continue
         meta = getattr(msg, "response_metadata", {}) or {}
         tu = meta.get("token_usage", {}) or meta.get("usage", {})
         if tu:
             input_t, output_t = TokenBudget._parse_usage(tu)
-            usage["prompt_tokens"] += input_t
-            usage["completion_tokens"] += output_t
-    return usage
+            return {"prompt_tokens": input_t, "completion_tokens": output_t}
+    return {"prompt_tokens": 0, "completion_tokens": 0}
 
 
 def get_last_token_usage() -> dict:
