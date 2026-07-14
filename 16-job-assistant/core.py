@@ -358,9 +358,7 @@ def search_documents(query: str, k: int = 4) -> str:
 
     # FAISS + BM25 各取 _fetch_k 条进入 RRF 融合，最后截断到 k
     _fetch_k = max(k * 5, min(len(_chunks_text), 20))
-    faiss_docs = _vectorstore.max_marginal_relevance_search(
-        query, k=_fetch_k, fetch_k=max(_fetch_k * 2, 40)
-    )
+    faiss_docs = _vectorstore.similarity_search(query, k=_fetch_k)
 
     # BM25 关键词检索（jieba 中文分词）
     bm25_scores = _bm25_index.get_scores(jieba.lcut(query))
