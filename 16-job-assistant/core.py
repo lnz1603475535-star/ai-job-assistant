@@ -52,10 +52,18 @@ class SensitiveFilter(logging.Filter):
     ]
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if hasattr(record, "msg") and isinstance(record.msg, str):
+        if isinstance(record.msg, str):
             for pattern, replacement in self._patterns:
                 record.msg = re.sub(pattern, replacement, record.msg)
-        if record.args and isinstance(record.args, tuple):
+        if isinstance(record.args, dict):
+            new_args = {}
+            for k, v in record.args.items():
+                if isinstance(v, str):
+                    for pattern, replacement in self._patterns:
+                        v = re.sub(pattern, replacement, v)
+                new_args[k] = v
+            record.args = new_args
+        elif isinstance(record.args, tuple):
             new_args = []
             for a in record.args:
                 if isinstance(a, str):
