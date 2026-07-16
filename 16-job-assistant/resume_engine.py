@@ -208,9 +208,12 @@ def customize_for_jd(
         # 缓存本次 token 用量
         global _last_agent_token_usage, _last_customize_failed
         _last_agent_token_usage = _extract_agent_token_usage(result["messages"])
-        _last_customize_failed = False
 
-        return ai_messages[-1].content if ai_messages else base_resume
+        if ai_messages:
+            _last_customize_failed = False
+            return ai_messages[-1].content
+        _last_customize_failed = True
+        return base_resume
     except Exception:
         logger.exception("JD 定制优化失败")
         _last_customize_failed = True
