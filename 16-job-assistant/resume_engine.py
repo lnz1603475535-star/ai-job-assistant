@@ -212,6 +212,7 @@ def customize_for_jd(
         if ai_messages:
             _last_customize_failed = False
             return ai_messages[-1].content
+        logger.warning("Agent 未输出有效 AIMessage，降级返回 base_resume")
         _last_customize_failed = True
         return base_resume
     except Exception:
