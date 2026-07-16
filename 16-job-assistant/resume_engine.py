@@ -158,12 +158,17 @@ def generate_base_resume(user: UserProfile, style: StyleProfile) -> str:
 # 5. JD 定制优化
 # ============================================================
 
-def customize_for_jd(base_resume: str, jd_reqs: JDRequirements) -> str:
+def customize_for_jd(
+    base_resume: str,
+    jd_reqs: JDRequirements,
+    notifications: list[str] | None = None,
+) -> str:
     """根据 JD 要求定制简历。返回定制后的 Markdown 文本。
 
     参数：
         base_resume：generate_base_resume 生成的基础简历（Markdown）
         jd_reqs：extract_jd_requirements 提取的 JD 结构化要求
+        notifications：上游节点的提醒（解析失败/降级等），Agent 会据此调整策略
     返回：
         定制后的 Markdown 格式简历
     """
@@ -173,8 +178,15 @@ def customize_for_jd(base_resume: str, jd_reqs: JDRequirements) -> str:
         prompt=JD_CUSTOMIZE_SYSTEM_PROMPT,
     )
 
+    # 构建系统提醒段落（Agent 会据此调整策略）
+    notes_section = ""
+    if notifications:
+        notes_section = "=== 系统提醒（注意以下信息可能不完整，请据此调整优化策略） ===\n"
+        notes_section += "\n".join(notifications) + "\n\n"
+
     user_message = HumanMessage(content=(
         f"根据以下 JD 要求，优化这份简历：\n\n"
+        f"{notes_section}"
         f"=== JD 要求 ===\n"
         f"岗位：{jd_reqs.title}\n"
         f"必备要求：{', '.join(jd_reqs.must_have)}\n"

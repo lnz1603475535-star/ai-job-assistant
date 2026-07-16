@@ -137,6 +137,7 @@ def node_customize(state: WorkflowState) -> dict[str, object]:
     result = customize_for_jd(
         state["base_resume"],
         state["jd_requirements"],
+        notifications=state.get("notifications"),
     )
     notifications = []
     if is_customize_failed():
