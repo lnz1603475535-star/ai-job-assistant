@@ -111,6 +111,10 @@ def node_check_parsed(state: WorkflowState) -> dict[str, object]:
     """节点 6：检查解析结果是否为空/默认值，追加提醒但不中断流程。"""
     notifications = []
 
+    style = state.get("style_profile")
+    if style and style.is_fallback:
+        notifications.append("⚠️ 风格提取失败，已使用默认风格（非样本风格），简历排版可能与预期不同")
+
     user = state.get("user_profile")
     if user:
         if not user.name:

@@ -48,6 +48,10 @@ class StyleProfile(BaseModel):
     format_patterns: str = Field(
         description="可复用的句式模板，如 '用 STAR 法则描述经历' 或 '每段经历 3-4 条成就'"
     )
+    is_fallback: bool = Field(
+        default=False,
+        description="是否使用了默认风格（样本简历解析失败时的降级标记）",
+    )
 
 
 # ============================================================

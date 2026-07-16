@@ -92,6 +92,7 @@ def extract_style(sample_path: str) -> StyleProfile:
             structure="个人信息 → 技能 → 工作经历 → 教育",
             tone="简洁专业",
             format_patterns="动词开头，每段经历 3-4 条",
+            is_fallback=True,
         )
 
 
