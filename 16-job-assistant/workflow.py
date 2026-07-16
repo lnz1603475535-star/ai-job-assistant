@@ -26,7 +26,10 @@ from resume_engine import (
 
 
 # MemorySaver 单例——断点恢复依赖同一实例跨请求保持状态
-_checkpointer = None
+_checkpointer: MemorySaver | None = None
+
+# 编译后的工作流单例——同一实例跨请求保持 checkpoint 状态
+_compiled_graph: CompiledStateGraph | None = None
 
 
 def get_checkpointer() -> MemorySaver:
@@ -169,7 +172,16 @@ def router_after_validate(state: WorkflowState) -> str:
 # ============================================================
 
 def build_workflow() -> CompiledStateGraph:
-    """构建并编译 LangGraph 工作流。"""
+    """构建并编译 LangGraph 工作流（单例模式）。
+
+    首次调用时构建图并编译；后续调用直接返回已编译的实例。
+    编译时启用 interrupt_after=["generate_base"]，工作流在生成基础简历后暂停，
+    等待外部调用 resume_workflow() 继续执行 JD 定制。
+    """
+    global _compiled_graph
+    if _compiled_graph is not None:
+        return _compiled_graph
+
     graph = StateGraph(WorkflowState)
 
     # 添加节点
@@ -194,8 +206,12 @@ def build_workflow() -> CompiledStateGraph:
     graph.add_edge("check_parsed", "customize")
     graph.add_edge("customize", END)
 
-    # 编译（单例 checkpointer，支持跨请求断点恢复）
-    return graph.compile(checkpointer=get_checkpointer())
+    # 编译：单例 checkpointer + generate_base 后暂停（人工审核断点）
+    _compiled_graph = graph.compile(
+        checkpointer=get_checkpointer(),
+        interrupt_after=["generate_base"],
+    )
+    return _compiled_graph
 
 
 # ============================================================
@@ -208,7 +224,10 @@ def run_workflow(
     jd_path: str,
     thread_id: str = "default",
 ) -> dict[str, object]:
-    """运行完整工作流，返回最终 state。
+    """运行工作流，在生成基础简历后暂停（interrupt_after=["generate_base"]）。
+
+    返回的 state 包含 base_resume 但不含 customized_resume。
+    用户审核基础简历后，调用 resume_workflow(thread_id) 继续执行 JD 定制。
 
     参数：
         user_text：用户口述文本
@@ -217,7 +236,8 @@ def run_workflow(
         thread_id：线程 ID（同一 thread_id 可跨调用保持状态）
 
     返回：
-        最终 WorkflowState 字典
+        暂停时的 WorkflowState 字典（含 base_resume，不含 customized_resume）
+        如果 validate_inputs 发现错误，直接返回错误 state（不暂停）
     """
     app = build_workflow()
     config = {"configurable": {"thread_id": thread_id}}
@@ -233,3 +253,37 @@ def run_workflow(
     }
 
     return app.invoke(initial_state, config)
+
+
+def resume_workflow(thread_id: str = "default") -> dict[str, object]:
+    """从 generate_base 后的断点恢复执行，继续运行 check_parsed → customize。
+
+    必须在 run_workflow() 返回暂停状态后调用，否则 LangGraph 会抛出运行时错误。
+    使用同一个 thread_id 以匹配 checkpoint。
+
+    参数：
+        thread_id：与 run_workflow() 相同的线程 ID
+
+    返回：
+        最终 WorkflowState 字典（包含 customized_resume）
+
+    异常：
+        RuntimeError：当前 thread_id 没有暂停中的 checkpoint
+    """
+    app = build_workflow()
+    config = {"configurable": {"thread_id": thread_id}}
+    try:
+        return app.invoke(None, config)
+    except Exception:
+        # 如果 invoke(None) 失败，尝试获取当前状态以诊断原因
+        current_state = app.get_state(config)
+        if current_state is None or not current_state.values:
+            raise RuntimeError(
+                f"无法恢复工作流：thread_id={thread_id} 没有已保存的 checkpoint。"
+                "请先调用 run_workflow() 启动工作流。"
+            )
+        raise RuntimeError(
+            f"工作流恢复失败（thread_id={thread_id}）："
+            f"当前节点={current_state.next or '未知'}，"
+            f"已执行步骤={list(current_state.values.keys()) if current_state.values else '无'}"
+        )

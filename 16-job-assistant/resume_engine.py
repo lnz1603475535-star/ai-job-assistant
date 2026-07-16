@@ -231,7 +231,7 @@ def _extract_agent_token_usage(messages: list) -> dict:
         if not isinstance(msg, AIMessage):
             continue
         meta = getattr(msg, "response_metadata", {}) or {}
-        tu = meta.get("token_usage", {}) or meta.get("usage", {})
+        tu = meta.get("token_usage") if "token_usage" in meta else meta.get("usage", {})
         if tu:
             input_t, output_t = TokenBudget._parse_usage(tu)
             return {"prompt_tokens": input_t, "completion_tokens": output_t}

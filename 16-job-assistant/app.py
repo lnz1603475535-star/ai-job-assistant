@@ -19,7 +19,7 @@ from core import (
     fetch_url_content,
     setup_logging,
 )
-from workflow import run_workflow
+from workflow import run_workflow, resume_workflow
 from resume_engine import parse_user_info
 from prompts import EXPERIENCE_EXTRACTION_PROMPT
 from models import validate_experience_markdown
@@ -90,11 +90,13 @@ def initialize_session_state():
         "user_text": "",
         "user_parsed": None,
         "workflow_result": None,
+        "workflow_paused": False,       # True 表示工作流停在 generate_base 断点，等待审核
+        "paused_result": None,          # 断点暂停时的中间 state（含 base_resume）
         "processing": False,
         "show_ai_extract": False,
         "ai_extract_result": None,
-        "index_error": None,        # 索引失败类型：encoding/missing/empty/network/unknown
-        "index_error_detail": "",   # unknown 类型时的原始错误信息
+        "index_error": None,
+        "index_error_detail": "",
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -171,6 +173,14 @@ def validate_current_step() -> bool:
     if step == 4:
         return st.session_state.workflow_result is not None
     return True
+
+
+def _reset_workflow_state() -> None:
+    """重置工作流相关状态，生成新 session_id 避免 checkpoint 冲突。"""
+    st.session_state.workflow_result = None
+    st.session_state.workflow_paused = False
+    st.session_state.paused_result = None
+    st.session_state.session_id = str(uuid.uuid4())
 
 
 def index_documents_if_needed():
@@ -474,66 +484,10 @@ def step_3_user_info():
 def step_4_generate_preview():
     st.header("④ 生成预览")
 
-    # 未生成时显示确认信息
-    if st.session_state.workflow_result is None:
-        st.info("请确认以下信息无误后，点击生成按钮。")
-
-        c1, c2 = st.columns(2)
-        with c1:
-            st.write(f"📄 **样本简历**：{st.session_state.resume_name}")
-        with c2:
-            st.write(f"📋 **目标 JD**：{st.session_state.jd_name}")
-
-        with st.expander("📝 个人信息（点击展开）"):
-            st.text(st.session_state.user_text[:800] + ("..." if len(st.session_state.user_text) > 800 else ""))
-
-        if st.button("🚀 开始生成简历", type="primary", disabled=st.session_state.processing):
-            st.session_state.processing = True
-            st.session_state.workflow_result = None
-
-            # 先索引文档
-            index_documents_if_needed()
-
-            if not st.session_state.docs_indexed:
-                show_index_error()
-                st.session_state.processing = False
-                return
-
-            # 运行工作流
-            with st.spinner("🤖 AI 正在生成简历... 这可能需要 30-60 秒"):
-                try:
-                    result = run_workflow(
-                        user_text=st.session_state.user_text,
-                        sample_resume_path=st.session_state.resume_path,
-                        jd_path=st.session_state.jd_path,
-                        thread_id=st.session_state.session_id,
-                    )
-
-                    errors = result.get("errors", [])
-                    if errors:
-                        st.session_state.processing = False
-                        for err in errors:
-                            st.error(f"❌ {err}")
-                    else:
-                        st.session_state.workflow_result = result
-                        st.session_state.processing = False
-                        st.rerun()
-                except Exception as e:
-                    error_str = str(e).lower()
-                    if "timeout" in error_str or "timed out" in error_str:
-                        st.error("请求超时，请检查网络后点击【重新生成】重试。")
-                    elif "rate limit" in error_str or "too many" in error_str:
-                        st.warning("请求过于频繁，请稍等片刻后重试。")
-                    elif "unauthorized" in error_str or "auth" in error_str or "key" in error_str:
-                        st.error("API 认证失败，请检查 .env 中的 DEEPSEEK_API_KEY 是否正确。")
-                    elif "connect" in error_str or "network" in error_str or "refused" in error_str:
-                        st.error("无法连接到 AI 服务，请检查网络连接后重试。")
-                    else:
-                        st.error(f"生成失败：{str(e)[:200]}")
-                    st.session_state.processing = False
-
-    # 已生成时显示预览
-    else:
+    # ================================================================
+    # 状态 1：已完成（workflow_result 非空）
+    # ================================================================
+    if st.session_state.workflow_result is not None:
         result = st.session_state.workflow_result
         base = result.get("base_resume", "")
         customized = result.get("customized_resume", "")
@@ -566,13 +520,160 @@ def step_4_generate_preview():
         col1, col2 = st.columns(2)
         with col1:
             if st.button("🔄 重新生成", use_container_width=True):
-                st.session_state.workflow_result = None
+                _reset_workflow_state()
                 st.rerun()
         with col2:
             if st.button("ℹ️ 调整信息", use_container_width=True):
-                st.session_state.workflow_result = None
+                _reset_workflow_state()
                 st.session_state.wizard_step = 3
                 st.rerun()
+        return
+
+    # ================================================================
+    # 状态 2：断点暂停（workflow_paused 为 True，等待审核基础简历）
+    # ================================================================
+    if st.session_state.workflow_paused:
+        paused = st.session_state.paused_result
+        if paused is None:
+            # 异常情况：标记为暂停但没有数据，回退到初始状态
+            st.session_state.workflow_paused = False
+            st.rerun()
+
+        base_resume = paused.get("base_resume", "")
+        user = paused.get("user_profile")
+        style = paused.get("style_profile")
+        jd_reqs = paused.get("jd_requirements")
+
+        st.success("✅ 基础简历已生成，请审核后再继续 JD 定制。")
+
+        # 解析摘要
+        with st.expander("🔍 解析摘要（点击展开）"):
+            if user:
+                st.write(f"**姓名**：{user.name or '（未识别）'}")
+                st.write(f"**技能**：{', '.join(user.skills) if user.skills else '（未识别）'}")
+                st.write(f"**经历**：{len(user.experience)} 段")
+            if style:
+                fallback_tag = " ⚠️ 默认风格" if style.is_fallback else ""
+                st.write(f"**风格**：{style.structure[:80]}...{fallback_tag}")
+            if jd_reqs:
+                st.write(f"**目标岗位**：{jd_reqs.title}")
+                st.write(f"**关键词**：{', '.join(jd_reqs.keywords) if jd_reqs.keywords else '（未提取到）'}")
+
+        # 基础简历预览
+        st.subheader("📄 基础简历预览")
+        with st.container(border=True):
+            if base_resume.strip():
+                st.markdown(base_resume)
+            else:
+                st.warning("基础简历生成为空，建议返回 Step 3 补充更多个人信息后重新生成。")
+
+        # 操作按钮
+        st.divider()
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("✅ 审核通过，继续 JD 定制", type="primary", use_container_width=True):
+                with st.spinner("🤖 AI 正在根据 JD 定制简历... 这可能需要 20-40 秒"):
+                    try:
+                        result = resume_workflow(thread_id=st.session_state.session_id)
+                        st.session_state.workflow_result = result
+                        st.session_state.workflow_paused = False
+                        st.session_state.paused_result = None
+                        st.rerun()
+                    except RuntimeError:
+                        st.error(
+                            "工作流状态丢失，无法继续。请点击下方「重新生成」按钮重新开始。"
+                            "这通常是因为服务重启导致缓存被清空。"
+                        )
+                        st.session_state.workflow_paused = False
+                        st.session_state.paused_result = None
+                    except Exception as e:
+                        error_str = str(e).lower()
+                        if "timeout" in error_str or "timed out" in error_str:
+                            st.error("请求超时，请检查网络后重试。您可以再次点击「审核通过」按钮继续。")
+                        elif "rate limit" in error_str or "too many" in error_str:
+                            st.warning("请求过于频繁，请稍等片刻后重试。")
+                        elif "unauthorized" in error_str or "auth" in error_str or "key" in error_str:
+                            st.error("API 认证失败，请检查 .env 中的 DEEPSEEK_API_KEY 是否正确。")
+                        elif "connect" in error_str or "network" in error_str or "refused" in error_str:
+                            st.error("无法连接到 AI 服务，请检查网络连接后重试。")
+                        else:
+                            st.error(f"JD 定制失败：{str(e)[:200]}")
+        with c2:
+            if st.button("🔄 放弃并重新生成", use_container_width=True):
+                _reset_workflow_state()
+                st.rerun()
+
+        return
+
+    # ================================================================
+    # 状态 3：未开始
+    # ================================================================
+    st.info("请确认以下信息无误后，点击生成按钮。")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.write(f"📄 **样本简历**：{st.session_state.resume_name}")
+    with c2:
+        st.write(f"📋 **目标 JD**：{st.session_state.jd_name}")
+
+    with st.expander("📝 个人信息（点击展开）"):
+        st.text(st.session_state.user_text[:800] + ("..." if len(st.session_state.user_text) > 800 else ""))
+
+    if st.button("🚀 开始生成简历", type="primary", disabled=st.session_state.processing):
+        st.session_state.processing = True
+        st.session_state.workflow_result = None
+        st.session_state.workflow_paused = False
+        st.session_state.paused_result = None
+
+        # 先索引文档
+        index_documents_if_needed()
+
+        if not st.session_state.docs_indexed:
+            show_index_error()
+            st.session_state.processing = False
+            return
+
+        # 运行工作流（会在 generate_base 后暂停）
+        with st.spinner("🤖 AI 正在生成基础简历... 这可能需要 20-40 秒"):
+            try:
+                result = run_workflow(
+                    user_text=st.session_state.user_text,
+                    sample_resume_path=st.session_state.resume_path,
+                    jd_path=st.session_state.jd_path,
+                    thread_id=st.session_state.session_id,
+                )
+
+                errors = result.get("errors", [])
+                if errors:
+                    st.session_state.processing = False
+                    for err in errors:
+                        st.error(f"❌ {err}")
+                    return
+
+                # 判断是否暂停在断点
+                customized = result.get("customized_resume", "")
+                if customized.strip():
+                    # 意外情况：工作流没有暂停直接完成了（例如 LangGraph 版本不支持 interrupt）
+                    st.session_state.workflow_result = result
+                else:
+                    # 预期情况：暂停在 generate_base 之后
+                    st.session_state.paused_result = result
+                    st.session_state.workflow_paused = True
+                st.session_state.processing = False
+                st.rerun()
+            except Exception as e:
+                error_str = str(e).lower()
+                if "timeout" in error_str or "timed out" in error_str:
+                    st.error("请求超时，请检查网络后点击【重新生成】重试。")
+                elif "rate limit" in error_str or "too many" in error_str:
+                    st.warning("请求过于频繁，请稍等片刻后重试。")
+                elif "unauthorized" in error_str or "auth" in error_str or "key" in error_str:
+                    st.error("API 认证失败，请检查 .env 中的 DEEPSEEK_API_KEY 是否正确。")
+                elif "connect" in error_str or "network" in error_str or "refused" in error_str:
+                    st.error("无法连接到 AI 服务，请检查网络连接后重试。")
+                else:
+                    st.error(f"生成失败：{str(e)[:200]}")
+                st.session_state.processing = False
 
 
 # ============================================================
