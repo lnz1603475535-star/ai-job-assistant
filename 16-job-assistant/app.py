@@ -538,6 +538,12 @@ def step_4_generate_preview():
         base = result.get("base_resume", "")
         customized = result.get("customized_resume", "")
 
+        # 展示提醒（解析失败/降级等）
+        notifications = result.get("notifications", [])
+        if notifications:
+            for note in notifications:
+                st.warning(note)
+
         # 中间结果（调试用）
         with st.expander("🔍 中间分析结果"):
             user = result.get("user_profile")
