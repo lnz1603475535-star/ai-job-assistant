@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 # TODO: 后端阶段拆除全局变量，token 用量改为通过 workflow state 传递
 _last_agent_token_usage: dict = {}
 
+# 标记最近一次 customize_for_jd 是否触发了降级（返回 base_resume）
+_last_customize_failed = False
+
 
 # ============================================================
 # 1. 用户信息提取
@@ -190,12 +193,14 @@ def customize_for_jd(base_resume: str, jd_reqs: JDRequirements) -> str:
         ]
 
         # 缓存本次 token 用量
-        global _last_agent_token_usage
+        global _last_agent_token_usage, _last_customize_failed
         _last_agent_token_usage = _extract_agent_token_usage(result["messages"])
+        _last_customize_failed = False
 
         return ai_messages[-1].content if ai_messages else base_resume
     except Exception:
         logger.exception("JD 定制优化失败")
+        _last_customize_failed = True
         return base_resume
 
 
@@ -222,3 +227,8 @@ def get_last_token_usage() -> dict:
     TODO: 后端阶段接入 TokenBudget 后，此函数改为从 TokenBudget 实例读取累计值。
     """
     return _last_agent_token_usage
+
+
+def is_customize_failed() -> bool:
+    """返回最近一次 customize_for_jd 是否触发了降级（异常返回 base_resume）。"""
+    return _last_customize_failed

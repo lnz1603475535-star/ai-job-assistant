@@ -5,8 +5,9 @@ AI 简历生成器 — LangGraph 工作流
 支持 MemorySaver 断点恢复。
 """
 
+import operator
 import os
-from typing import TypedDict
+from typing import Annotated, TypedDict
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.state import CompiledStateGraph
@@ -20,6 +21,7 @@ from resume_engine import (
     generate_base_resume,
     customize_for_jd,
     get_last_token_usage,
+    is_customize_failed,
 )
 
 
@@ -52,6 +54,7 @@ class WorkflowState(TypedDict, total=False):
     customized_resume: str
     token_usage: dict  # TODO: 后端阶段接入 TokenBudget 进行成本控制
     errors: list[str]  # 不用 operator.add：每次 node_validate_inputs 返回全新错误列表，覆盖旧值
+    notifications: Annotated[list[str], operator.add]  # 用 operator.add：多节点各自追加，不覆盖
 
 
 # ============================================================
@@ -104,16 +107,44 @@ def node_generate_base(state: WorkflowState) -> dict[str, object]:
     return {"base_resume": result}
 
 
+def node_check_parsed(state: WorkflowState) -> dict[str, object]:
+    """节点 6：检查解析结果是否为空/默认值，追加提醒但不中断流程。"""
+    notifications = []
+
+    user = state.get("user_profile")
+    if user:
+        if not user.name:
+            notifications.append("⚠️ 未识别到姓名，简历可能不完整")
+        if not user.skills:
+            notifications.append("⚠️ 未识别到技能，简历可能缺少技术栈")
+
+    jd = state.get("jd_requirements")
+    if jd:
+        if not jd.title or jd.title == "未知岗位":
+            notifications.append("⚠️ JD 解析不完整，定制可能不够精准")
+        if not jd.keywords:
+            notifications.append("⚠️ 未提取到 JD 关键词，简历定制效果有限")
+
+    base = state.get("base_resume", "")
+    if not base.strip():
+        notifications.append("⚠️ 基础简历生成为空，请检查输入信息是否完整")
+
+    return {"notifications": notifications}
+
+
 def node_customize(state: WorkflowState) -> dict[str, object]:
-    """节点 6：JD 定制优化。"""
+    """节点 7：JD 定制优化。"""
     result = customize_for_jd(
         state["base_resume"],
         state["jd_requirements"],
     )
-    # 记录真实 token 消耗（TODO: 后端阶段接入 TokenBudget 进行成本控制）
+    notifications = []
+    if is_customize_failed():
+        notifications.append("⚠️ JD 定制优化失败，已使用基础简历代替")
     return {
         "customized_resume": result,
         "token_usage": get_last_token_usage(),
+        "notifications": notifications,
     }
 
 
@@ -142,6 +173,7 @@ def build_workflow() -> CompiledStateGraph:
     graph.add_node("parse_user", node_parse_user)
     graph.add_node("extract_jd", node_extract_jd)
     graph.add_node("generate_base", node_generate_base)
+    graph.add_node("check_parsed", node_check_parsed)
     graph.add_node("customize", node_customize)
 
     # 连接边
@@ -153,7 +185,8 @@ def build_workflow() -> CompiledStateGraph:
     graph.add_edge("extract_style", "parse_user")
     graph.add_edge("parse_user", "extract_jd")
     graph.add_edge("extract_jd", "generate_base")
-    graph.add_edge("generate_base", "customize")
+    graph.add_edge("generate_base", "check_parsed")
+    graph.add_edge("check_parsed", "customize")
     graph.add_edge("customize", END)
 
     # 编译（单例 checkpointer，支持跨请求断点恢复）
@@ -189,6 +222,7 @@ def run_workflow(
         "sample_resume_path": sample_resume_path,
         "jd_path": jd_path,
         "errors": [],
+        "notifications": [],
         "base_resume": "",
         "customized_resume": "",
     }
