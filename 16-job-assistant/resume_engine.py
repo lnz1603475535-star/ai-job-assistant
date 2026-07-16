@@ -9,7 +9,7 @@ import logging
 
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.messages import HumanMessage, AIMessage
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 
 from models import UserProfile, StyleProfile, JDRequirements
 from prompts import (
@@ -173,10 +173,10 @@ def customize_for_jd(
     返回：
         定制后的 Markdown 格式简历
     """
-    agent = create_react_agent(
+    agent = create_agent(
         model=llm,
         tools=[search_documents],
-        prompt=JD_CUSTOMIZE_SYSTEM_PROMPT,
+        system_prompt=JD_CUSTOMIZE_SYSTEM_PROMPT,
     )
 
     # 构建系统提醒段落（Agent 会据此调整策略）
