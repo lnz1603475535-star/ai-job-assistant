@@ -1,4 +1,5 @@
-data/app.log
+# 运行时日志（RotatingFileHandler 会产生 app.log 及轮转文件 app.log.1/2/3）
+data/app.log*
 __pycache__/
 *.pyc
 *.pyo
