@@ -325,7 +325,8 @@ def fetch_url_content(url: str) -> str:
     """从网页 URL 提取文本内容（自动去 HTML 标签、检测登录页、编码回退）。
 
     Raises:
-        ValueError：请求失败 / 超时 / 编码无法识别 / 内容是登录页
+        ValueError：链接格式错误 / 请求失败 / 超时 / 页面为空 /
+                   编码无法识别 / 内容是登录页 / 无法提取文字
     """
     if not url.startswith(("http://", "https://")):
         raise ValueError("链接格式错误，请以 http:// 或 https:// 开头。")
@@ -411,7 +412,7 @@ def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple[object, 
         例如：{"sample_resume": ["samples/xxx.txt"], "jd": ["jd_python.txt"]}
 
     返回：
-        (vectorstore, bm25_index, chunks)
+        (vectorstore, chunks)
     """
     if not file_paths:
         raise ValueError("未指定任何文档路径。")
@@ -453,7 +454,11 @@ def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple[object, 
 def search_documents(query: str, k: int = 4) -> str:
     """混合搜索文档数据库（FAISS 语义检索 + BM25 关键词匹配）。
     用于查找用户经历、JD 要求、样本风格等已索引的文档内容。
-    query：中文或英文的自然语言搜索词。"""
+
+    参数：
+        query：中文或英文的自然语言搜索词
+        k：返回结果数量，默认 4
+    """
     if _vectorstore is None:
         return "尚未加载任何文档。"
     if _bm25_index is None:
@@ -518,6 +523,10 @@ class TokenBudget:
 
     TODO: 后端阶段在 workflow 中实例化，接入 node_customize 的 token_usage 数据。
     当前 _parse_usage 已被 _extract_agent_token_usage 复用，实例尚未创建。
+
+    注意：customize_for_jd 内部有重试逻辑，重试失败的尝试无法提取 token 用量
+    （无 API 响应对象）。TokenBudget 只累积成功调用的数据，瞬时网络错误通常
+    未实际扣费，30% 的 warning_ratio 缓冲足以覆盖这种误差。
     """
 
     def __init__(self, max_tokens: int = 15000, warning_ratio: float = 0.7):

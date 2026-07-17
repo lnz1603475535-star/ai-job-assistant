@@ -1,9 +1,9 @@
 """
-AI 简历生成器 — Streamlit UI (Round 3)
+AI 简历生成器 — Streamlit UI (Round 4)
 =====================================
 分步向导 + 简历预览 + 经验库编辑器。
 
-技术栈：LangChain | LangGraph | DeepSeek | FAISS | Streamlit
+技术栈：LangChain | LangGraph | DeepSeek | FAISS | BM25 | jieba | Streamlit
 """
 
 import streamlit as st
@@ -109,7 +109,7 @@ def initialize_session_state():
 def save_uploaded_file(uploaded_file) -> tuple[str, str | None]:
     """保存上传文件到临时目录，返回 (路径, 错误消息)。
     成功时路径有效、错误为 None；失败时路径为空、错误为用户可读的提示。
-    支持 .txt 和 .pdf 格式。
+    支持 .txt / .pdf / .docx / .md 格式。
     """
     try:
         content = uploaded_file.getvalue()
@@ -881,8 +881,7 @@ def main():
 
     st.divider()
     st.caption(
-        "技术栈：LangChain | LangGraph | DeepSeek | FAISS | BM25 | jieba | Streamlit | "
-        "Round 4 — 分步向导 + 经验库管理"
+        "技术栈：LangChain | LangGraph | DeepSeek | FAISS | BM25 | jieba | Streamlit"
     )
 
 

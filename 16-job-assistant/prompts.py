@@ -2,7 +2,8 @@
 AI 简历生成器 - Prompt 模板
 ============================
 集中管理所有 prompt，方便调优和复用。
-每个模板对应 resume_engine.py 中的一个核心函数。
+模板 1-5 对应 resume_engine.py 的 5 个核心函数，
+模板 6 对应 app.py 侧边栏 AI 整理功能。
 """
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -115,8 +116,7 @@ JD_CUSTOMIZE_SYSTEM_PROMPT = (
 - "未识别到技能" → 主动用 search_documents 从经验库中提取技能关键词，不要仅凭 JD 关键词推测用户技能
 - "JD 解析不完整" / "未提取到 JD 关键词" → 更多依赖 JD 标题和必备要求做匹配，同时用 search_documents 搜索经验库中与岗位相关的经历
 - "风格提取失败" → 使用标准简历排版：个人信息 → 技能 → 工作经历 → 教育背景
-- "基础简历生成为空" → 仅根据 JD 要求和经验库搜索结果，生成一份基础简历框架
-- "JD 定制优化失败" → 此提醒意味着你收到的已经是基础简历，不要重新生成，仅做必要的 JD 关键词融入即可"""
+- "基础简历生成为空" → 仅根据 JD 要求和经验库搜索结果，生成一份基础简历框架"""
 )
 
 # LCEL 版：用于 ChatPromptTemplate 链（备用，后续升级可用）
