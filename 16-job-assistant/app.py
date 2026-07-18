@@ -6,8 +6,11 @@ AI 简历生成器 — Streamlit UI (Round 4)
 技术栈：LangChain | LangGraph | DeepSeek | FAISS | BM25 | jieba | Streamlit
 """
 
+import logging
 import streamlit as st
 import sys, os, tempfile, uuid
+
+logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -66,7 +69,7 @@ def load_experience_bank() -> str:
             with open(EXP_BANK_PATH, "w", encoding="utf-8") as f:
                 f.write(default)
         except OSError:
-            pass
+            logger.exception("经验库默认文件创建失败")
         return default
     try:
         with open(EXP_BANK_PATH, "r", encoding="utf-8") as f:
