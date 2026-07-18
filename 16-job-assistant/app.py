@@ -111,7 +111,7 @@ def initialize_session_state():
         st.session_state.exp_bank_content = load_experience_bank()
 
 
-def save_uploaded_file(uploaded_file) -> tuple[str, str | None]:
+def save_uploaded_file(uploaded_file, prefix: str = "upload") -> tuple[str, str | None]:
     """保存上传文件到临时目录，返回 (路径, 错误消息)。
     成功时路径有效、错误为 None；失败时路径为空、错误为用户可读的提示。
     支持 .txt / .pdf / .docx / .md 格式。
@@ -124,8 +124,10 @@ def save_uploaded_file(uploaded_file) -> tuple[str, str | None]:
     if len(content) == 0:
         return "", "文件内容为空，请检查后重新上传。"
 
-    suffix = os.path.splitext(uploaded_file.name)[1] or ".txt"
-    path = os.path.join(tempfile.gettempdir(), f"resume_{uuid.uuid4().hex[:8]}{suffix}")
+    suffix = os.path.splitext(uploaded_file.name)[1]
+    if not suffix or suffix == ".":           # 无扩展名或只有点 → 默认 txt
+        suffix = ".txt"
+    path = os.path.join(tempfile.gettempdir(), f"{prefix}_{uuid.uuid4().hex[:8]}{suffix}")
     try:
         with open(path, "wb") as f:
             f.write(content)
@@ -331,7 +333,7 @@ def step_1_resume():
     if source == "📁 上传文件":
         uploaded = st.file_uploader("上传简历 (.txt, .pdf, .docx, .md)", type=["txt", "pdf", "docx", "md"], key="step1_uploader")
         if uploaded:
-            path, error = save_uploaded_file(uploaded)
+            path, error = save_uploaded_file(uploaded, "resume")
             if error:
                 st.error(f"❌ {error}")
                 st.session_state.resume_path = None
@@ -375,7 +377,7 @@ def step_2_jd():
     if source == "📁 上传文件":
         uploaded = st.file_uploader("上传 JD (.txt, .pdf, .docx, .md)", type=["txt", "pdf", "docx", "md"], key="step2_uploader")
         if uploaded:
-            path, error = save_uploaded_file(uploaded)
+            path, error = save_uploaded_file(uploaded, "jd")
             if error:
                 st.error(f"❌ {error}")
                 st.session_state.jd_path = None
