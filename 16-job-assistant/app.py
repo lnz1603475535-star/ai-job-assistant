@@ -70,13 +70,14 @@ def load_experience_bank() -> str:
                 f.write(default)
         except OSError:
             logger.exception("经验库默认文件创建失败")
-            st.warning("经验库文件创建失败，请检查磁盘空间或 data/ 目录权限。你的编辑内容可能无法保存。")
+            st.warning("经验库文件创建失败，修改可能无法保存。")
         return default
     try:
         with open(EXP_BANK_PATH, "r", encoding="utf-8") as f:
             content = f.read()
         return content if content.strip() else "# 经验库\n\n在此粘贴你的项目经历。\n"
     except (UnicodeDecodeError, OSError, PermissionError) as e:
+        logger.exception("经验库文件读取失败")
         st.error(f"经验库文件读取失败：{e}")
         return "# 经验库\n\n（文件损坏，请手动检查或删除 data/experience_bank.md）\n"
 
@@ -160,6 +161,7 @@ def _render_file_preview(state_key: str, label_prefix: str):
             st.session_state[path_key] = None
             st.session_state[name_key] = None
         except (OSError, PermissionError):
+            logger.exception("文件预览读取失败")
             st.error("无法读取文件，请检查文件权限后重试。")
             st.session_state[path_key] = None
             st.session_state[name_key] = None
@@ -672,6 +674,7 @@ def step_4_generate_preview():
                 st.session_state.processing = False
                 st.rerun()
             except Exception as e:
+                logger.exception("工作流执行失败")
                 error_str = str(e).lower()
                 if "timeout" in error_str or "timed out" in error_str:
                     st.error("请求超时，请检查网络后点击【重新生成】重试。")
@@ -761,10 +764,13 @@ def render_sidebar():
                 st.session_state.docs_indexed = False
                 st.toast("✅ 经验库已保存")
             except PermissionError:
+                logger.exception("经验库保存失败：权限不足")
                 st.error("保存失败：文件被占用或没有写入权限，请关闭其他程序后重试。")
             except OSError:
+                logger.exception("经验库保存失败：磁盘/文件系统错误")
                 st.error("保存失败：磁盘空间不足或文件系统错误，请检查后重试。")
             except Exception as e:
+                logger.exception("经验库保存失败")
                 st.error(f"保存失败：{str(e)[:150]}")
 
         st.divider()
@@ -829,10 +835,13 @@ def render_sidebar():
                         st.toast("✅ 已追加到经验库！")
                         st.rerun()
                     except PermissionError:
+                        logger.exception("经验库写入失败：权限不足")
                         st.error("写入失败：文件被占用或没有写入权限，请关闭其他程序后重试。")
                     except OSError:
+                        logger.exception("经验库写入失败：磁盘/文件系统错误")
                         st.error("写入失败：磁盘空间不足或文件系统错误，请检查后重试。")
                     except Exception as e:
+                        logger.exception("经验库写入失败")
                         st.error(f"写入失败：{str(e)[:150]}")
             with c2:
                 if st.button("❌ 取消", use_container_width=True):
