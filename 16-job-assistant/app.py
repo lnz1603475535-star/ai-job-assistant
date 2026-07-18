@@ -137,6 +137,15 @@ def save_uploaded_file(uploaded_file, prefix: str = "upload") -> tuple[str, str 
     return path, None
 
 
+def _sanitize_error(exc: Exception) -> str:
+    """脱敏异常信息：替换用户目录路径，截断到 200 字符。"""
+    msg = str(exc)
+    home = os.path.expanduser("~")
+    if home and home != "~":
+        msg = msg.replace(home, "~")
+    return msg[:200]
+
+
 def _render_file_preview(state_key: str, label_prefix: str):
     """通用文件预览组件。state_key: 'resume' 或 'jd'"""
     path_key = f"{state_key}_path"
@@ -163,7 +172,6 @@ def _render_file_preview(state_key: str, label_prefix: str):
             st.session_state[path_key] = None
             st.session_state[name_key] = None
         except (OSError, PermissionError):
-            logger.exception("文件预览读取失败")
             st.error("无法读取文件，请检查文件权限后重试。")
             st.session_state[path_key] = None
             st.session_state[name_key] = None
@@ -207,7 +215,6 @@ def index_documents_if_needed():
             })
             set_vectorstore(vs, chunks)
             st.session_state.docs_indexed = True
-            st.session_state.chunk_count = len(chunks)
             st.session_state.index_error = None
             st.toast(f"✅ 已索引 {len(chunks)} 个文本块")
         except (UnicodeDecodeError, ValueError) as e:
@@ -222,7 +229,7 @@ def index_documents_if_needed():
                 st.session_state.index_error = "encoding"
             else:
                 st.session_state.index_error = "unknown"
-                st.session_state.index_error_detail = str(e)[:200]
+                st.session_state.index_error_detail = _sanitize_error(e)
         except Exception as e:
             error_str = str(e).lower()
             if "empty" in error_str or "no text" in error_str:
@@ -231,7 +238,7 @@ def index_documents_if_needed():
                 st.session_state.index_error = "network"
             else:
                 st.session_state.index_error = "unknown"
-                st.session_state.index_error_detail = str(e)[:200]
+                st.session_state.index_error_detail = _sanitize_error(e)
 
 
 def show_index_error():
