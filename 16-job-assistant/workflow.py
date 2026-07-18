@@ -256,9 +256,8 @@ def run_workflow(
 
 
 def resume_workflow(thread_id: str = "default") -> dict[str, object]:
-    """从 generate_base 后的断点恢复执行，继续运行 check_parsed → customize。
+    """从 check_parsed 后的断点恢复执行，继续运行 customize。
 
-    必须在 run_workflow() 返回暂停状态后调用，否则 LangGraph 会抛出运行时错误。
     使用同一个 thread_id 以匹配 checkpoint。
 
     参数：
@@ -268,22 +267,18 @@ def resume_workflow(thread_id: str = "default") -> dict[str, object]:
         最终 WorkflowState 字典（包含 customized_resume）
 
     异常：
-        RuntimeError：当前 thread_id 没有暂停中的 checkpoint
+        RuntimeError：当前 thread_id 没有已保存的 checkpoint
     """
     app = build_workflow()
     config = {"configurable": {"thread_id": thread_id}}
-    try:
-        return app.invoke(None, config)
-    except Exception:
-        # 如果 invoke(None) 失败，尝试获取当前状态以诊断原因
-        current_state = app.get_state(config)
-        if current_state is None or not current_state.values:
-            raise RuntimeError(
-                f"无法恢复工作流：thread_id={thread_id} 没有已保存的 checkpoint。"
-                "请先调用 run_workflow() 启动工作流。"
-            )
+
+    # 先查有没有 checkpoint，没有就直接报错，不盲调 invoke
+    current_state = app.get_state(config)
+    if current_state is None or not current_state.values:
         raise RuntimeError(
-            f"工作流恢复失败（thread_id={thread_id}）："
-            f"当前节点={current_state.next or '未知'}，"
-            f"已执行步骤={list(current_state.values.keys()) if current_state.values else '无'}"
+            f"无法恢复工作流：thread_id={thread_id} 没有已保存的 checkpoint。"
+            "请先调用 run_workflow() 启动工作流。"
         )
+
+    # 有 checkpoint → 正常恢复，任何异常直接透传
+    return app.invoke(None, config)
