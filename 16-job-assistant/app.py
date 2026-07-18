@@ -70,6 +70,7 @@ def load_experience_bank() -> str:
                 f.write(default)
         except OSError:
             logger.exception("经验库默认文件创建失败")
+            st.warning("经验库文件创建失败，请检查磁盘空间或 data/ 目录权限。你的编辑内容可能无法保存。")
         return default
     try:
         with open(EXP_BANK_PATH, "r", encoding="utf-8") as f:
