@@ -76,7 +76,7 @@ def load_experience_bank() -> str:
             content = f.read()
         return content if content.strip() else "# 经验库\n\n在此粘贴你的项目经历。\n"
     except (UnicodeDecodeError, OSError, PermissionError) as e:
-        st.error(f"经验库文件读取失败：{e}，请手动检查或删除 data/experience_bank.md")
+        st.error(f"经验库文件读取失败：{_sanitize_error(e)}，请手动检查或删除 data/experience_bank.md")
         return "# 经验库\n\n在此粘贴你的项目经历。\n"
 
 
@@ -616,7 +616,7 @@ def step_4_generate_preview():
                         elif "connect" in error_str or "network" in error_str or "refused" in error_str:
                             st.error("无法连接到 AI 服务，请检查网络连接后重试。")
                         else:
-                            st.error(f"JD 定制失败：{str(e)[:200]}")
+                            st.error(f"JD 定制失败：{_sanitize_error(e)}")
         with c2:
             if st.button("🔄 放弃并重新生成", use_container_width=True):
                 _reset_workflow_state()
@@ -692,7 +692,7 @@ def step_4_generate_preview():
                 elif "connect" in error_str or "network" in error_str or "refused" in error_str:
                     st.error("无法连接到 AI 服务，请检查网络连接后重试。")
                 else:
-                    st.error(f"生成失败：{str(e)[:200]}")
+                    st.error(f"生成失败：{_sanitize_error(e)}")
                 st.session_state.processing = False
 
 
