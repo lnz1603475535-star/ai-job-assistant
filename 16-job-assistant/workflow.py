@@ -175,8 +175,8 @@ def build_workflow() -> CompiledStateGraph:
     """构建并编译 LangGraph 工作流（单例模式）。
 
     首次调用时构建图并编译；后续调用直接返回已编译的实例。
-    编译时启用 interrupt_after=["generate_base"]，工作流在生成基础简历后暂停，
-    等待外部调用 resume_workflow() 继续执行 JD 定制。
+    编译时启用 interrupt_after=["check_parsed"]，工作流在检查解析结果后暂停，
+    用户可以看到基础简历 + 所有提醒（姓名/技能/JD/风格是否异常），再决定继续定制。
     """
     global _compiled_graph
     if _compiled_graph is not None:
@@ -209,7 +209,7 @@ def build_workflow() -> CompiledStateGraph:
     # 编译：单例 checkpointer + generate_base 后暂停（人工审核断点）
     _compiled_graph = graph.compile(
         checkpointer=get_checkpointer(),
-        interrupt_after=["generate_base"],
+        interrupt_after=["check_parsed"],
     )
     return _compiled_graph
 
@@ -224,7 +224,7 @@ def run_workflow(
     jd_path: str,
     thread_id: str = "default",
 ) -> dict[str, object]:
-    """运行工作流，在生成基础简历后暂停（interrupt_after=["generate_base"]）。
+    """运行工作流，在检查解析结果后暂停（interrupt_after=["check_parsed"]）。
 
     返回的 state 包含 base_resume 但不含 customized_resume。
     用户审核基础简历后，调用 resume_workflow(thread_id) 继续执行 JD 定制。

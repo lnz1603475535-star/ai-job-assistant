@@ -90,8 +90,8 @@ def initialize_session_state():
         "user_text": "",
         "user_parsed": None,
         "workflow_result": None,
-        "workflow_paused": False,       # True 表示工作流停在 generate_base 断点，等待审核
-        "paused_result": None,          # 断点暂停时的中间 state（含 base_resume）
+        "workflow_paused": False,       # True 表示工作流停在 check_parsed 断点，等待审核
+        "paused_result": None,          # 断点暂停时的中间 state（含 base_resume + notifications）
         "processing": False,
         "show_ai_extract": False,
         "ai_extract_result": None,
@@ -530,7 +530,7 @@ def step_4_generate_preview():
         return
 
     # ================================================================
-    # 状态 2：断点暂停（workflow_paused 为 True，等待审核基础简历）
+    # 状态 2：断点暂停（workflow_paused 为 True，审核基础简历 + 提醒后继续）
     # ================================================================
     if st.session_state.workflow_paused:
         paused = st.session_state.paused_result
@@ -543,6 +543,12 @@ def step_4_generate_preview():
         user = paused.get("user_profile")
         style = paused.get("style_profile")
         jd_reqs = paused.get("jd_requirements")
+        notifications = paused.get("notifications", [])
+
+        # 展示提醒（check_parsed 在暂停前已执行）
+        if notifications:
+            for note in notifications:
+                st.warning(note)
 
         st.success("✅ 基础简历已生成，请审核后再继续 JD 定制。")
 
@@ -633,7 +639,7 @@ def step_4_generate_preview():
             st.session_state.processing = False
             return
 
-        # 运行工作流（会在 generate_base 后暂停）
+        # 运行工作流（会在 check_parsed 后暂停）
         with st.spinner("🤖 AI 正在生成基础简历... 这可能需要 20-40 秒"):
             try:
                 result = run_workflow(
@@ -656,7 +662,7 @@ def step_4_generate_preview():
                     # 意外情况：工作流没有暂停直接完成了（例如 LangGraph 版本不支持 interrupt）
                     st.session_state.workflow_result = result
                 else:
-                    # 预期情况：暂停在 generate_base 之后
+                    # 预期情况：暂停在 check_parsed 之后
                     st.session_state.paused_result = result
                     st.session_state.workflow_paused = True
                 st.session_state.processing = False
