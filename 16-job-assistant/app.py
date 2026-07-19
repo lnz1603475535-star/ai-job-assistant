@@ -301,6 +301,9 @@ def render_navigation():
     with c1:
         if st.session_state.wizard_step > 1:
             if st.button("← 上一步", use_container_width=True):
+                # 重置来源追踪，避免回到 Step 1/2 时误清已选择的状态
+                st.session_state._prev_resume_source = None
+                st.session_state._prev_jd_source = None
                 st.session_state.wizard_step -= 1
                 st.rerun()
 
