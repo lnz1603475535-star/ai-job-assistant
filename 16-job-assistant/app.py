@@ -430,6 +430,11 @@ def step_2_jd():
             key="step2_paste_input",
             label_visibility="collapsed",
         )
+        jd_label = st.text_input(
+            "给这段 JD 起个名字（可选）",
+            placeholder="例如：OPPO AI产品实习生",
+            key="step2_paste_label",
+        )
         if st.button("✅ 确认内容", key="step2_paste_confirm"):
             stripped = jd_text.strip()
             if not stripped:
@@ -444,10 +449,11 @@ def step_2_jd():
                 except OSError:
                     st.error("文件保存失败，请检查磁盘空间后重试。")
                 else:
+                    name = jd_label.strip() or "手动粘贴 JD"
                     st.session_state.jd_path = path
-                    st.session_state.jd_name = f"📝 {stripped[:30].replace(chr(10), ' ')}..."
+                    st.session_state.jd_name = name
                     st.session_state.docs_indexed = False
-                    st.toast(f"✅ 已保存（{len(stripped)} 字符）")
+                    st.toast(f"✅ 已保存：{name}（{len(stripped)} 字符）")
         elif not jd_text.strip() and st.session_state.get("jd_path"):
             st.session_state.jd_path = None
             st.session_state.jd_name = None
