@@ -19,7 +19,6 @@ from core import (
     set_vectorstore,
     llm,
     load_file_content,
-    fetch_url_content,
     setup_logging,
 )
 from workflow import run_workflow, resume_workflow
@@ -336,6 +335,13 @@ def step_1_resume():
         horizontal=True,
         key="resume_source",
     )
+    # 切换来源时清除旧选择
+    prev = st.session_state.get("_prev_resume_source")
+    if prev and prev != source:
+        st.session_state.resume_path = None
+        st.session_state.resume_name = None
+        st.session_state.docs_indexed = False
+    st.session_state["_prev_resume_source"] = source
 
     if source == "📁 上传文件":
         uploaded = st.file_uploader("上传简历 (.txt, .pdf, .docx, .md)", type=["txt", "pdf", "docx", "md"], key="step1_uploader")
@@ -384,10 +390,17 @@ def step_2_jd():
 
     source = st.radio(
         "JD 来源",
-        ["📁 上传文件", "🔗 粘贴链接", "📋 选择样例"],
+        ["📁 上传文件", "📋 选择样例"],
         horizontal=True,
         key="jd_source",
     )
+    # 切换来源时清除旧选择
+    prev = st.session_state.get("_prev_jd_source")
+    if prev and prev != source:
+        st.session_state.jd_path = None
+        st.session_state.jd_name = None
+        st.session_state.docs_indexed = False
+    st.session_state["_prev_jd_source"] = source
 
     if source == "📁 上传文件":
         uploaded = st.file_uploader("上传 JD (.txt, .pdf, .docx, .md)", type=["txt", "pdf", "docx", "md"], key="step2_uploader")
@@ -406,33 +419,6 @@ def step_2_jd():
             st.session_state.jd_path = None
             st.session_state.jd_name = None
             st.session_state.docs_indexed = False
-
-    elif source == "🔗 粘贴链接":
-        url = st.text_input(
-            "粘贴招聘页面链接",
-            placeholder="https://www.example.com/jobs/python-backend",
-            key="step2_url_input",
-        )
-        if st.button("🔍 提取 JD 内容", key="step2_url_fetch"):
-            if not url.strip():
-                st.warning("请先粘贴链接。")
-            else:
-                with st.spinner("正在提取页面内容..."):
-                    try:
-                        text = fetch_url_content(url.strip())
-                        # 保存为临时文件
-                        suffix = ".txt"
-                        path = os.path.join(tempfile.gettempdir(), f"jd_url_{uuid.uuid4().hex[:8]}{suffix}")
-                        with open(path, "w", encoding="utf-8") as f:
-                            f.write(text)
-                        # 用 URL 最后一段作为显示名
-                        name = url.strip().rstrip("/").split("/")[-1] or "网页 JD"
-                        st.session_state.jd_path = path
-                        st.session_state.jd_name = f"🔗 {name}"
-                        st.session_state.docs_indexed = False
-                        st.toast(f"✅ 已提取：{name}（{len(text)} 字符）")
-                    except ValueError as e:
-                        st.error(str(e))
 
     else:
         labels = ["-- 请选择 --"] + [j["label"] for j in AVAILABLE_JDS]

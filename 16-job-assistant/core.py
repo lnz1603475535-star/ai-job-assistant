@@ -5,12 +5,9 @@ AI 简历生成器 - 核心基础设施
 不包含任何业务逻辑——业务逻辑在 resume_engine.py 中。
 """
 
-import html as _html
 import logging
 import os, re, warnings
 from typing import List
-
-import requests
 
 # 抑制依赖库的噪音警告
 warnings.filterwarnings("ignore", message=".*pkg_resources.*")
@@ -256,146 +253,6 @@ def load_file_content(path: str) -> str:
             raise ValueError("PDF 可能是扫描件，无法提取文字。请上传含文本的 PDF 或直接粘贴文字内容。")
         raise ValueError("文件内容为空，请检查后重新上传。")
     return text
-
-
-# ── URL 请求 ────────────────────────────────────────────
-
-_REQUEST_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml",
-    "Accept-Language": "zh-CN,zh;q=0.9",
-}
-
-_LOGIN_URL_PATTERNS = ["/login", "/auth", "/signin", "auth=", "redirect="]
-_LOGIN_CONTENT_KEYWORDS = [
-    "用户名", "密码", "验证码", "忘记密码", "username", "password", "captcha",
-]
-
-
-def _smart_decode(raw: bytes, fallback_encodings: list[str]) -> str:
-    """多级编码回退 + 乱码检测。"""
-    for enc in fallback_encodings:
-        if not enc:
-            continue
-        try:
-            text = raw.decode(enc)
-        except (UnicodeDecodeError, LookupError):
-            continue
-        if text.count("�") > len(text) * 0.01:  # 替换字符太多
-            continue
-        return text
-    raise ValueError("无法识别该网页的文字编码，请尝试直接复制 JD 文字后上传。")
-
-
-def _check_login_redirect(resp) -> None:
-    """检测 302 重定向是否到了登录页。"""
-    if resp.history and any(p in resp.url.lower() for p in _LOGIN_URL_PATTERNS):
-        raise ValueError(
-            "该链接已重定向到登录页面，需要先登录才能查看 JD 内容。"
-            "请直接复制 JD 文字粘贴到上传文件，或换一个不需要登录的链接。"
-        )
-
-
-def _check_login_content(text: str) -> None:
-    """检测提取内容是否为登录表单。"""
-    text_lower = text.lower()
-    hits = [kw for kw in _LOGIN_CONTENT_KEYWORDS if kw in text_lower]
-    if len(hits) >= 2 and len(text) < 2000:
-        raise ValueError(
-            f"提取内容疑似登录页面（检测到：{'、'.join(hits[:3])}），"
-            "不是招聘 JD。请直接复制 JD 文字后上传文件。"
-        )
-
-
-def _strip_html(html: str) -> str:
-    """去除 HTML 标签，提取纯文本正文。"""
-    html = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
-    html = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL | re.IGNORECASE)
-    html = re.sub(r"</?(?:br|p|div|li|tr|h[1-6])[^>]*>", "\n", html, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", "", html)
-    text = _html.unescape(text)
-    text = re.sub(r"\n\s*\n", "\n\n", text)
-    return text.strip()
-
-
-# ── 公开函数 ────────────────────────────────────────────
-
-def fetch_url_content(url: str) -> str:
-    """从网页 URL 提取文本内容。先 requests 快速抓取，内容过短时自动降级 Playwright 渲染 SPA。
-
-    Raises:
-        ValueError：链接格式错误 / 请求失败 / 超时 / 页面为空 /
-                   编码无法识别 / 内容是登录页 / 无法提取文字
-    """
-    if not url.startswith(("http://", "https://")):
-        raise ValueError("链接格式错误，请以 http:// 或 https:// 开头。")
-
-    # 1. HTTP 请求
-    try:
-        resp = requests.get(
-            url, headers=_REQUEST_HEADERS, timeout=15, allow_redirects=True,
-        )
-        resp.raise_for_status()
-    except requests.exceptions.Timeout:
-        raise ValueError("请求超时，请检查网络连接或换一个链接重试。")
-    except requests.exceptions.ConnectionError:
-        raise ValueError("无法连接到该网站，请检查链接是否正确。")
-    except requests.exceptions.HTTPError as e:
-        status = e.response.status_code if e.response else "未知"
-        messages = {404: "页面不存在", 403: "网站拒绝访问，该页面可能需要登录"}
-        raise ValueError(f"{messages.get(status, f'请求失败（HTTP {status}）')}，请检查链接后重试。")
-    except requests.exceptions.RequestException as e:
-        raise ValueError(f"网络请求失败：{str(e)[:100]}")
-
-    # 2. 解码
-    encodings = [resp.apparent_encoding, "utf-8", "gbk", "gb2312"]
-    html = _smart_decode(resp.content, encodings)
-
-    if not html.strip():
-        raise ValueError("页面内容为空，请检查链接是否正确。")
-
-    # 3. 登录页检测
-    _check_login_redirect(resp)
-
-    # 4. HTML → 纯文本（过短可能为 SPA 页面）
-    text = _strip_html(html)
-    if len(text.strip()) < 200:
-        text = _fetch_with_playwright(url)
-    if not text or len(text.strip()) < 50:
-        raise ValueError("未能从页面提取到有效文字，该页面可能为纯图片或需登录。请尝试直接复制 JD 文字后粘贴到文件上传。")
-
-    # 5. 内容登录检测 + 规范化
-    _check_login_content(text)
-    return normalize_text(text)
-
-
-def _fetch_with_playwright(url: str) -> str:
-    """用无头浏览器渲染页面后提取纯文本（SPA 降级方案）。
-
-    仅在 requests 提取内容过短时调用，不用于常规抓取。
-    失败时返回空字符串，由调用方决定如何处理。
-    """
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        logger.warning("playwright 未安装，无法渲染 SPA 页面。安装：pip install playwright && playwright install chromium")
-        return ""
-
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=30000)
-            text = page.inner_text("body")
-            browser.close()
-            return text.strip()
-    except Exception:
-        logger.exception("Playwright 渲染失败")
-        return ""
 
 
 _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
