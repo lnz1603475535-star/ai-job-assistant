@@ -324,7 +324,7 @@ def _strip_html(html: str) -> str:
 # ── 公开函数 ────────────────────────────────────────────
 
 def fetch_url_content(url: str) -> str:
-    """从网页 URL 提取文本内容（自动去 HTML 标签、检测登录页、编码回退）。
+    """从网页 URL 提取文本内容。先 requests 快速抓取，内容过短时自动降级 Playwright 渲染 SPA。
 
     Raises:
         ValueError：链接格式错误 / 请求失败 / 超时 / 页面为空 /
@@ -360,14 +360,41 @@ def fetch_url_content(url: str) -> str:
     # 3. 登录页检测
     _check_login_redirect(resp)
 
-    # 4. HTML → 纯文本
+    # 4. HTML → 纯文本（过短可能为 SPA 页面）
     text = _strip_html(html)
-    if not text:
-        raise ValueError("未能从页面提取到有效文字，该页面可能为纯图片或需 JavaScript 渲染。")
+    if len(text.strip()) < 200:
+        text = _fetch_with_playwright(url)
+    if not text or len(text.strip()) < 50:
+        raise ValueError("未能从页面提取到有效文字，该页面可能为纯图片或需登录。请尝试直接复制 JD 文字后粘贴到文件上传。")
 
     # 5. 内容登录检测 + 规范化
     _check_login_content(text)
     return normalize_text(text)
+
+
+def _fetch_with_playwright(url: str) -> str:
+    """用无头浏览器渲染页面后提取纯文本（SPA 降级方案）。
+
+    仅在 requests 提取内容过短时调用，不用于常规抓取。
+    失败时返回空字符串，由调用方决定如何处理。
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        logger.warning("playwright 未安装，无法渲染 SPA 页面。安装：pip install playwright && playwright install chromium")
+        return ""
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            text = page.inner_text("body")
+            browser.close()
+            return text.strip()
+    except Exception:
+        logger.exception("Playwright 渲染失败")
+        return ""
 
 
 _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
