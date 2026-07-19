@@ -263,8 +263,8 @@ def _is_transient_error(exc: Exception) -> bool:
     error_str = str(exc).lower()
     transient_keywords = [
         "timeout", "timed out",
-        "connection", "connect",
-        "network", "refused", "reset",
+        "connection",
+        "network", "refused", "connection reset",
         "rate limit", "too many requests",
         "server error", "internal server error",
         "service unavailable", "bad gateway", "gateway timeout",

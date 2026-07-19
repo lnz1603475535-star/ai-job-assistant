@@ -613,7 +613,7 @@ def step_4_generate_preview():
                             st.error("请求超时，请检查网络后重试。您可以再次点击「审核通过」按钮继续。")
                         elif "rate limit" in error_str or "too many" in error_str:
                             st.warning("请求过于频繁，请稍等片刻后重试。")
-                        elif "unauthorized" in error_str or "auth" in error_str or "key" in error_str:
+                        elif "unauthorized" in error_str or "auth" in error_str or "api key" in error_str or "apikey" in error_str:
                             st.error("API 认证失败，请检查 .env 中的 DEEPSEEK_API_KEY 是否正确。")
                         elif "connect" in error_str or "network" in error_str or "refused" in error_str:
                             st.error("无法连接到 AI 服务，请检查网络连接后重试。")
@@ -689,7 +689,7 @@ def step_4_generate_preview():
                     st.error("请求超时，请检查网络后点击【重新生成】重试。")
                 elif "rate limit" in error_str or "too many" in error_str:
                     st.warning("请求过于频繁，请稍等片刻后重试。")
-                elif "unauthorized" in error_str or "auth" in error_str or "key" in error_str:
+                elif "unauthorized" in error_str or "auth" in error_str or "api key" in error_str or "apikey" in error_str:
                     st.error("API 认证失败，请检查 .env 中的 DEEPSEEK_API_KEY 是否正确。")
                 elif "connect" in error_str or "network" in error_str or "refused" in error_str:
                     st.error("无法连接到 AI 服务，请检查网络连接后重试。")
