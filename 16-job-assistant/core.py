@@ -39,6 +39,7 @@ import atexit
 from logging.handlers import RotatingFileHandler
 from typing import Set
 
+logger = logging.getLogger(__name__)
 _log_initialized = False
 
 
