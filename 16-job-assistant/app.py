@@ -361,6 +361,11 @@ def step_1_resume():
                 st.session_state.resume_name = uploaded.name
                 st.session_state.docs_indexed = False
                 st.toast(f"✅ 已上传：{uploaded.name}")
+        elif prev is not None and st.session_state.get("resume_path"):
+            # prev 有值 = 不是刚导航回来 → 用户删除了上传文件
+            st.session_state.resume_path = None
+            st.session_state.resume_name = None
+            st.session_state.docs_indexed = False
     else:
         labels = ["-- 请选择 --"] + [r["label"] for r in AVAILABLE_RESUMES]
         choice = st.selectbox("选择样例简历", labels, key="step1_sample_select")
@@ -416,6 +421,11 @@ def step_2_jd():
                 st.session_state.jd_name = uploaded.name
                 st.session_state.docs_indexed = False
                 st.toast(f"✅ 已上传：{uploaded.name}")
+        elif prev is not None and st.session_state.get("jd_path"):
+            # prev 有值 = 不是刚导航回来 → 用户删除了上传文件
+            st.session_state.jd_path = None
+            st.session_state.jd_name = None
+            st.session_state.docs_indexed = False
 
     elif source == "📝 粘贴文字":
         jd_text = st.text_area(
