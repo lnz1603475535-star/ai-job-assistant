@@ -99,6 +99,8 @@ def initialize_session_state():
         "ai_extract_result": None,
         "index_error": None,
         "index_error_detail": "",
+        "_prev_resume_source": None,   # Step 1 来源切换检测
+        "_prev_jd_source": None,       # Step 2 来源切换检测
     }
     for key, val in defaults.items():
         if key not in st.session_state:
