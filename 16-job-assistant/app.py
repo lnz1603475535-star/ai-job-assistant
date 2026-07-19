@@ -99,8 +99,6 @@ def initialize_session_state():
         "ai_extract_result": None,
         "index_error": None,
         "index_error_detail": "",
-        "_prev_resume_source": None,   # Step 1 来源切换检测
-        "_prev_jd_source": None,       # Step 2 来源切换检测
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -301,9 +299,6 @@ def render_navigation():
     with c1:
         if st.session_state.wizard_step > 1:
             if st.button("← 上一步", use_container_width=True):
-                # 重置来源追踪，避免回到 Step 1/2 时误清已选择的状态
-                st.session_state._prev_resume_source = None
-                st.session_state._prev_jd_source = None
                 st.session_state.wizard_step -= 1
                 st.rerun()
 
@@ -340,13 +335,6 @@ def step_1_resume():
         horizontal=True,
         key="resume_source",
     )
-    # 切换来源时清除旧选择
-    prev = st.session_state.get("_prev_resume_source")
-    if prev and prev != source:
-        st.session_state.resume_path = None
-        st.session_state.resume_name = None
-        st.session_state.docs_indexed = False
-    st.session_state["_prev_resume_source"] = source
 
     if source == "📁 上传文件":
         uploaded = st.file_uploader("上传简历 (.txt, .pdf, .docx, .md)", type=["txt", "pdf", "docx", "md"], key="step1_uploader")
@@ -361,11 +349,6 @@ def step_1_resume():
                 st.session_state.resume_name = uploaded.name
                 st.session_state.docs_indexed = False
                 st.toast(f"✅ 已上传：{uploaded.name}")
-        elif prev is not None and st.session_state.get("resume_path"):
-            # prev 有值 = 不是刚导航回来 → 用户删除了上传文件
-            st.session_state.resume_path = None
-            st.session_state.resume_name = None
-            st.session_state.docs_indexed = False
     else:
         labels = ["-- 请选择 --"] + [r["label"] for r in AVAILABLE_RESUMES]
         choice = st.selectbox("选择样例简历", labels, key="step1_sample_select")
@@ -400,13 +383,6 @@ def step_2_jd():
         horizontal=True,
         key="jd_source",
     )
-    # 切换来源时清除旧选择
-    prev = st.session_state.get("_prev_jd_source")
-    if prev and prev != source:
-        st.session_state.jd_path = None
-        st.session_state.jd_name = None
-        st.session_state.docs_indexed = False
-    st.session_state["_prev_jd_source"] = source
 
     if source == "📁 上传文件":
         uploaded = st.file_uploader("上传 JD (.txt, .pdf, .docx, .md)", type=["txt", "pdf", "docx", "md"], key="step2_uploader")
@@ -421,11 +397,6 @@ def step_2_jd():
                 st.session_state.jd_name = uploaded.name
                 st.session_state.docs_indexed = False
                 st.toast(f"✅ 已上传：{uploaded.name}")
-        elif prev is not None and st.session_state.get("jd_path"):
-            # prev 有值 = 不是刚导航回来 → 用户删除了上传文件
-            st.session_state.jd_path = None
-            st.session_state.jd_name = None
-            st.session_state.docs_indexed = False
 
     elif source == "📝 粘贴文字":
         jd_text = st.text_area(
