@@ -446,10 +446,6 @@ def step_2_jd():
                     st.session_state.jd_name = name
                     st.session_state.docs_indexed = False
                     st.toast(f"✅ 已保存：{name}（{len(stripped)} 字符）")
-        elif not jd_text.strip() and st.session_state.get("jd_path"):
-            st.session_state.jd_path = None
-            st.session_state.jd_name = None
-            st.session_state.docs_indexed = False
 
     else:
         labels = ["-- 请选择 --"] + [j["label"] for j in AVAILABLE_JDS]
