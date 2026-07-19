@@ -392,39 +392,10 @@ def _fetch_with_playwright(url: str) -> str:
             page.goto(url, wait_until="networkidle", timeout=30000)
             text = page.inner_text("body")
             browser.close()
-            return _clean_playwright_text(text)
+            return text.strip()
     except Exception:
         logger.exception("Playwright 渲染失败")
         return ""
-
-
-def _clean_playwright_text(text: str) -> str:
-    """去掉 SPA 页面常见的导航、页脚、推荐岗位等噪音行。"""
-    noise_patterns = [
-        r"分享\s*$", r"投递岗位\s*$", r"收藏\s*$",
-        r"相关岗位推荐.*", r"^\d{4}-\d{2}-\d{2}\s*发布$",
-        r".*尊重并保护.*保密信息.*",
-        r".*请勿非法披露.*",
-        r"^\s*(首页|社会招聘|校园招聘|工作地点|员工故事|个人中心)\s*$",
-    ]
-    lines = text.split("\n")
-    kept = []
-    skip_until_blank = False
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            skip_until_blank = False
-            kept.append(line)
-            continue
-        if skip_until_blank:
-            continue
-        if any(re.search(p, stripped) for p in noise_patterns):
-            continue
-        if stripped == "相关岗位推荐":
-            skip_until_blank = True  # 跳过推荐岗位列表，直到空行
-            continue
-        kept.append(line)
-    return "\n".join(kept).strip()
 
 
 _MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
