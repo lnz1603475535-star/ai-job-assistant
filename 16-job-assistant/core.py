@@ -127,6 +127,8 @@ def setup_logging() -> None:
     ]
     for name in _noisy_libs:
         logging.getLogger(name).setLevel(logging.WARNING)
+    # transformers 的 __path__ 废弃警告是 WARNING 级别，提到 ERROR 才能消掉
+    logging.getLogger("transformers").setLevel(logging.ERROR)
 
     _log_initialized = True
     logging.getLogger(__name__).info("日志系统已初始化")
