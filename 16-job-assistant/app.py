@@ -386,11 +386,11 @@ def step_1_resume():
 
 def step_2_jd():
     st.header("② 选择职位描述 (JD)")
-    st.caption("上传文件、粘贴招聘链接、或从样例中选择。AI 会根据 JD 要求定制简历内容。")
+    st.caption("上传文件、粘贴文字、或从样例中选择。AI 会根据 JD 要求定制简历内容。")
 
     source = st.radio(
         "JD 来源",
-        ["📁 上传文件", "📋 选择样例"],
+        ["📁 上传文件", "📝 粘贴文字", "📋 选择样例"],
         horizontal=True,
         key="jd_source",
     )
@@ -416,6 +416,37 @@ def step_2_jd():
                 st.session_state.docs_indexed = False
                 st.toast(f"✅ 已上传：{uploaded.name}")
         elif st.session_state.get("jd_path"):
+            st.session_state.jd_path = None
+            st.session_state.jd_name = None
+            st.session_state.docs_indexed = False
+
+    elif source == "📝 粘贴文字":
+        jd_text = st.text_area(
+            "粘贴 JD 文字",
+            height=200,
+            placeholder="将招聘 JD 的岗位职责和任职要求粘贴到这里",
+            key="step2_paste_input",
+            label_visibility="collapsed",
+        )
+        if st.button("✅ 确认内容", key="step2_paste_confirm"):
+            stripped = jd_text.strip()
+            if not stripped:
+                st.warning("请先粘贴 JD 文字。")
+            elif len(stripped) < 20:
+                st.warning("粘贴的文字太短，请至少包含完整的岗位职责。")
+            else:
+                path = os.path.join(tempfile.gettempdir(), f"jd_paste_{uuid.uuid4().hex[:8]}.txt")
+                try:
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(stripped)
+                except OSError:
+                    st.error("文件保存失败，请检查磁盘空间后重试。")
+                else:
+                    st.session_state.jd_path = path
+                    st.session_state.jd_name = f"📝 {stripped[:30].replace(chr(10), ' ')}..."
+                    st.session_state.docs_indexed = False
+                    st.toast(f"✅ 已保存（{len(stripped)} 字符）")
+        elif not jd_text.strip() and st.session_state.get("jd_path"):
             st.session_state.jd_path = None
             st.session_state.jd_name = None
             st.session_state.docs_indexed = False
