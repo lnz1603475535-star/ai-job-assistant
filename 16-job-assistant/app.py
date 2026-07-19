@@ -361,6 +361,10 @@ def step_1_resume():
                     st.session_state.docs_indexed = False
                     break
             st.toast(f"✅ 已选择：{choice}")
+        elif choice == "-- 请选择 --" and st.session_state.get("resume_path"):
+            st.session_state.resume_path = None
+            st.session_state.resume_name = None
+            st.session_state.docs_indexed = False
 
     # 当前选择提示
     _render_file_preview("resume", "📄")
@@ -433,6 +437,10 @@ def step_2_jd():
                     st.session_state.docs_indexed = False
                     break
             st.toast(f"✅ 已选择：{choice}")
+        elif choice == "-- 请选择 --" and st.session_state.get("jd_path"):
+            st.session_state.jd_path = None
+            st.session_state.jd_name = None
+            st.session_state.docs_indexed = False
 
     # 当前选择提示
     _render_file_preview("jd", "📋")
