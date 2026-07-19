@@ -295,7 +295,7 @@ def render_step_indicator(current_step: int):
 
 def render_navigation():
     """底部上一步/下一步按钮。"""
-    c1, c2, c3 = st.columns([1, 2, 1])
+    c1, _, c3 = st.columns([1, 2, 1])
 
     with c1:
         if st.session_state.wizard_step > 1:
@@ -350,10 +350,15 @@ def step_1_resume():
                 st.session_state.resume_name = uploaded.name
                 st.session_state.docs_indexed = False
                 st.toast(f"✅ 已上传：{uploaded.name}")
+        elif st.session_state.get("resume_path") and st.session_state.get("resume_name"):
+            # 用户清除了已上传的文件 → 同步清除选择
+            st.session_state.resume_path = None
+            st.session_state.resume_name = None
+            st.session_state.docs_indexed = False
     else:
-        labels = [r["label"] for r in AVAILABLE_RESUMES]
+        labels = ["-- 请选择 --"] + [r["label"] for r in AVAILABLE_RESUMES]
         choice = st.selectbox("选择样例简历", labels, key="step1_sample_select")
-        if choice:
+        if choice and choice != "-- 请选择 --":
             for r in AVAILABLE_RESUMES:
                 if r["label"] == choice:
                     st.session_state.resume_path = r["path"]
@@ -394,6 +399,11 @@ def step_2_jd():
                 st.session_state.jd_name = uploaded.name
                 st.session_state.docs_indexed = False
                 st.toast(f"✅ 已上传：{uploaded.name}")
+        elif st.session_state.get("jd_path") and st.session_state.get("jd_name"):
+            # 用户清除了已上传的文件 → 同步清除选择
+            st.session_state.jd_path = None
+            st.session_state.jd_name = None
+            st.session_state.docs_indexed = False
 
     elif source == "🔗 粘贴链接":
         url = st.text_input(
@@ -423,9 +433,9 @@ def step_2_jd():
                         st.error(str(e))
 
     else:
-        labels = [j["label"] for j in AVAILABLE_JDS]
+        labels = ["-- 请选择 --"] + [j["label"] for j in AVAILABLE_JDS]
         choice = st.selectbox("选择样例 JD", labels, key="step2_sample_select")
-        if choice:
+        if choice and choice != "-- 请选择 --":
             for j in AVAILABLE_JDS:
                 if j["label"] == choice:
                     st.session_state.jd_path = j["path"]
