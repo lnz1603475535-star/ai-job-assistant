@@ -217,11 +217,13 @@ def index_documents_if_needed():
             st.toast(f"✅ 已索引 {len(chunks)} 个文本块")
         except (UnicodeDecodeError, ValueError) as e:
             error_str = str(e).lower()
-            if "加密" in error_str or "encrypt" in error_str or "密码" in error_str:
+            if "不存在" in error_str or "无法访问" in error_str or "not found" in error_str:
+                st.session_state.index_error = "missing"
+            elif "加密" in error_str or "encrypt" in error_str or "密码" in error_str:
                 st.session_state.index_error = "pdf_encrypted"
             elif "扫描" in error_str or "scan" in error_str:
                 st.session_state.index_error = "pdf_scanned"
-            elif "损坏" in error_str or "corrupt" in error_str or "pdf" in error_str:
+            elif "损坏" in error_str or "corrupt" in error_str:
                 st.session_state.index_error = "pdf_corrupted"
             elif "编码" in error_str or "encode" in error_str:
                 st.session_state.index_error = "encoding"
