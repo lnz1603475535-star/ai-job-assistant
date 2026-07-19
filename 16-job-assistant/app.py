@@ -87,10 +87,8 @@ def initialize_session_state():
         "session_id": str(uuid.uuid4()),
         "resume_path": None,
         "resume_name": None,
-        "resume_source": None,     # "upload" | "sample" — 区分来源，避免切换标签页时误清
         "jd_path": None,
         "jd_name": None,
-        "jd_input_source": None,   # 同上，JD 的来源标记
         "docs_indexed": False,
         "user_text": "",
         "user_parsed": None,
@@ -350,15 +348,8 @@ def step_1_resume():
             else:
                 st.session_state.resume_path = path
                 st.session_state.resume_name = uploaded.name
-                st.session_state.resume_source = "upload"
                 st.session_state.docs_indexed = False
                 st.toast(f"✅ 已上传：{uploaded.name}")
-        elif st.session_state.get("resume_source") == "upload":
-            # 用户清除了已上传的文件 → 同步清除选择
-            st.session_state.resume_path = None
-            st.session_state.resume_name = None
-            st.session_state.resume_source = None
-            st.session_state.docs_indexed = False
     else:
         labels = ["-- 请选择 --"] + [r["label"] for r in AVAILABLE_RESUMES]
         choice = st.selectbox("选择样例简历", labels, key="step1_sample_select")
@@ -367,7 +358,6 @@ def step_1_resume():
                 if r["label"] == choice:
                     st.session_state.resume_path = r["path"]
                     st.session_state.resume_name = choice
-                    st.session_state.resume_source = "sample"
                     st.session_state.docs_indexed = False
                     break
             st.toast(f"✅ 已选择：{choice}")
@@ -402,15 +392,8 @@ def step_2_jd():
             else:
                 st.session_state.jd_path = path
                 st.session_state.jd_name = uploaded.name
-                st.session_state.jd_input_source = "upload"
                 st.session_state.docs_indexed = False
                 st.toast(f"✅ 已上传：{uploaded.name}")
-        elif st.session_state.get("jd_input_source") == "upload":
-            # 用户清除了已上传的文件 → 同步清除选择
-            st.session_state.jd_path = None
-            st.session_state.jd_name = None
-            st.session_state.jd_input_source = None
-            st.session_state.docs_indexed = False
 
     elif source == "🔗 粘贴链接":
         url = st.text_input(
@@ -447,7 +430,6 @@ def step_2_jd():
                 if j["label"] == choice:
                     st.session_state.jd_path = j["path"]
                     st.session_state.jd_name = choice
-                    st.session_state.jd_input_source = "sample"
                     st.session_state.docs_indexed = False
                     break
             st.toast(f"✅ 已选择：{choice}")
