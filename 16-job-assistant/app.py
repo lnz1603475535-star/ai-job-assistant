@@ -82,6 +82,7 @@ def initialize_session_state():
         "workflow_result": None,
         "workflow_paused": False,       # True 表示工作流停在 check_parsed 断点，等待审核
         "paused_result": None,          # 断点暂停时的中间 state（含 base_resume + notifications）
+        "paused_lost": False,           # True 表示审核状态意外丢失，需提示用户
         "processing": False,
         "show_ai_extract": False,
         "ai_extract_result": None,
@@ -516,7 +517,9 @@ def step_4_generate_preview():
         paused = st.session_state.paused_result
         if paused is None:
             # 异常情况：标记为暂停但没有数据，回退到初始状态
+            logger.warning("workflow_paused=True 但 paused_result 为空，回退到初始状态")
             st.session_state.workflow_paused = False
+            st.session_state.paused_lost = True
             st.rerun()
 
         base_resume = paused.get("base_resume", "")
@@ -594,6 +597,10 @@ def step_4_generate_preview():
     # ================================================================
     # 状态 3：未开始
     # ================================================================
+    if st.session_state.get("paused_lost"):
+        st.warning("上一次的审核状态已丢失（通常由服务重启导致），请重新生成。")
+        st.session_state.paused_lost = False
+
     st.info("请确认以下信息无误后，点击生成按钮。")
 
     c1, c2 = st.columns(2)
