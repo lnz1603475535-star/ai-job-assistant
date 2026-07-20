@@ -41,7 +41,7 @@ AVAILABLE_JDS = [
     {"label": "高级 Python 后端工程师", "path": os.path.join(SAMPLE_DIR, "jd_python_senior.txt")},
     {"label": "高级前端工程师", "path": os.path.join(SAMPLE_DIR, "jd_frontend_senior.txt")},
 ]
-WIZARD_STEPS = ["样本简历", "JD 要求", "个人信息", "生成预览", "下载导出"]
+WIZARD_STEPS = ["样本简历", "JD 要求", "补充信息", "生成预览", "下载导出"]
 
 
 # ============================================================
@@ -182,6 +182,7 @@ def _reset_workflow_state() -> None:
     st.session_state.workflow_result = None
     st.session_state.workflow_paused = False
     st.session_state.paused_result = None
+    st.session_state.processing = False
     st.session_state.session_id = str(uuid.uuid4())
 
 
@@ -441,7 +442,7 @@ def step_2_jd():
 
 
 # ============================================================
-# Step 3：输入个人信息
+# Step 3：补充信息（可选）
 # ============================================================
 
 def step_3_user_info():
@@ -472,6 +473,9 @@ def step_4_generate_preview():
         result = st.session_state.workflow_result
         base = result.get("base_resume", "")
         customized = result.get("customized_resume", "")
+
+        if result.get("_interrupted") is False:
+            st.info("简历已自动生成，未经过人工审核步骤。")
 
         # 展示提醒（解析失败/降级等）
         notifications = result.get("notifications", [])
@@ -554,13 +558,14 @@ def step_4_generate_preview():
             if base_resume.strip():
                 st.markdown(base_resume)
             else:
-                st.warning("基础简历生成为空，建议返回 Step 3 补充更多个人信息后重新生成。")
+                st.warning("基础简历生成为空，建议在侧边栏补充经验库内容后重新生成。")
 
         # 操作按钮
         st.divider()
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("✅ 审核通过，继续 JD 定制", type="primary", use_container_width=True):
+            if st.button("✅ 审核通过，继续 JD 定制", type="primary", use_container_width=True, disabled=st.session_state.processing):
+                st.session_state.processing = True
                 with st.spinner("🤖 AI 正在根据 JD 定制简历... 这可能需要 20-40 秒"):
                     try:
                         result = resume_workflow(thread_id=st.session_state.session_id)
@@ -569,13 +574,17 @@ def step_4_generate_preview():
                         st.session_state.paused_result = None
                         st.rerun()
                     except RuntimeError:
+                        logger.warning("resume_workflow 失败：checkpoint 不存在")
                         st.error(
                             "工作流状态丢失，无法继续。请点击下方「重新生成」按钮重新开始。"
                             "这通常是因为服务重启导致缓存被清空。"
                         )
                         st.session_state.workflow_paused = False
                         st.session_state.paused_result = None
+                        st.session_state.processing = False
                     except Exception as e:
+                        logger.exception("resume_workflow 执行失败")
+                        st.session_state.processing = False
                         error_str = str(e).lower()
                         if "timeout" in error_str or "timed out" in error_str:
                             st.error("请求超时，请检查网络后重试。您可以再次点击「审核通过」按钮继续。")
@@ -597,7 +606,7 @@ def step_4_generate_preview():
     # ================================================================
     # 状态 3：未开始
     # ================================================================
-    if st.session_state.get("paused_lost"):
+    if st.session_state.paused_lost:
         st.warning("上一次的审核状态已丢失（通常由服务重启导致），请重新生成。")
         st.session_state.paused_lost = False
 
@@ -645,17 +654,15 @@ def step_4_generate_preview():
                         st.error(f"❌ {err}")
                     return
 
-                # 判断是否暂停在断点
-                customized = result.get("customized_resume", "")
-                if customized.strip():
-                    # 意外情况：工作流没有暂停直接完成了（例如 LangGraph 版本不支持 interrupt）
-                    logger.warning("工作流未在断点暂停，直接完成了（interrupt_after 可能未生效）")
-                    st.info("简历已自动生成，未进入审核步骤。")
-                    st.session_state.workflow_result = result
-                else:
+                # 判断是否暂停在断点（由 LangGraph checkpoint 状态决定）
+                if result["_interrupted"]:
                     # 预期情况：暂停在 check_parsed 之后
                     st.session_state.paused_result = result
                     st.session_state.workflow_paused = True
+                else:
+                    # 意外情况：工作流没有暂停直接完成了
+                    logger.warning("工作流未在断点暂停，直接完成了（interrupt_after 可能未生效）")
+                    st.session_state.workflow_result = result
                 st.session_state.processing = False
                 st.rerun()
             except Exception as e:

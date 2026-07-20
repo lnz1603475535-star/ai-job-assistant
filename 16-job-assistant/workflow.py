@@ -257,7 +257,11 @@ def run_workflow(
         "customized_resume": "",
     }
 
-    return app.invoke(initial_state, config)
+    result = app.invoke(initial_state, config)
+    # 标记是否暂停在断点
+    state = app.get_state(config)
+    result["_interrupted"] = bool(state.next) if state else False
+    return result
 
 
 def resume_workflow(thread_id: str = "default") -> dict[str, object]:
