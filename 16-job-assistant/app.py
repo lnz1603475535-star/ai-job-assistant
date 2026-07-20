@@ -602,8 +602,9 @@ def step_4_generate_preview():
     with c2:
         st.write(f"📋 **目标 JD**：{st.session_state.jd_name}")
 
-    with st.expander("📝 个人信息（点击展开）"):
-        st.text(st.session_state.user_text[:800] + ("..." if len(st.session_state.user_text) > 800 else ""))
+    if st.session_state.user_text.strip():
+        with st.expander("📝 补充信息（点击展开）"):
+            st.text(st.session_state.user_text[:800] + ("..." if len(st.session_state.user_text) > 800 else ""))
 
     if st.button("🚀 开始生成简历", type="primary", disabled=st.session_state.processing):
         st.session_state.processing = True
