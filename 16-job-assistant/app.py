@@ -642,6 +642,8 @@ def step_4_generate_preview():
                 customized = result.get("customized_resume", "")
                 if customized.strip():
                     # 意外情况：工作流没有暂停直接完成了（例如 LangGraph 版本不支持 interrupt）
+                    logger.warning("工作流未在断点暂停，直接完成了（interrupt_after 可能未生效）")
+                    st.info("简历已自动生成，未进入审核步骤。")
                     st.session_state.workflow_result = result
                 else:
                     # 预期情况：暂停在 check_parsed 之后
