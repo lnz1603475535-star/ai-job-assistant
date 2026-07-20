@@ -48,6 +48,7 @@ class WorkflowState(TypedDict, total=False):
     """工作流状态。一函数一节点的中间产物。"""
 
     user_text: str
+    user_supplement: str  # Step 3 可选的用户补充（侧重点/岗位看法等）
     sample_resume_path: str
     jd_path: str
     style_profile: StyleProfile
@@ -145,6 +146,7 @@ def node_customize(state: WorkflowState) -> dict[str, object]:
         state["base_resume"],
         state["jd_requirements"],
         notifications=state.get("notifications"),
+        user_supplement=state.get("user_supplement", ""),
     )
     notifications = []
     if is_customize_failed():
@@ -223,6 +225,7 @@ def run_workflow(
     sample_resume_path: str,
     jd_path: str,
     thread_id: str = "default",
+    user_supplement: str = "",
 ) -> dict[str, object]:
     """运行工作流，在检查解析结果后暂停（interrupt_after=["check_parsed"]）。
 
@@ -230,10 +233,11 @@ def run_workflow(
     用户审核基础简历后，调用 resume_workflow(thread_id) 继续执行 JD 定制。
 
     参数：
-        user_text：用户口述文本
+        user_text：用户信息文本（从经验库读取）
         sample_resume_path：样本简历文件路径
         jd_path：JD 文件路径
         thread_id：线程 ID（同一 thread_id 可跨调用保持状态）
+        user_supplement：可选的用户补充信息（侧重点/岗位看法等）
 
     返回：
         暂停时的 WorkflowState 字典（含 base_resume，不含 customized_resume）
@@ -244,6 +248,7 @@ def run_workflow(
 
     initial_state = {
         "user_text": user_text,
+        "user_supplement": user_supplement,
         "sample_resume_path": sample_resume_path,
         "jd_path": jd_path,
         "errors": [],

@@ -66,6 +66,7 @@ def test_workflow():
         sample_resume_path=sample_resume_path,
         jd_path=jd_path,
         thread_id="test-round4",
+        user_supplement="测试：突出高并发经验，弱化前端",
     )
 
     errors = result.get("errors", [])

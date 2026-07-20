@@ -22,7 +22,6 @@ from core import (
     setup_logging,
 )
 from workflow import run_workflow, resume_workflow
-from resume_engine import parse_user_info
 from prompts import EXPERIENCE_EXTRACTION_PROMPT
 from models import validate_experience_markdown
 
@@ -43,16 +42,6 @@ AVAILABLE_JDS = [
     {"label": "高级前端工程师", "path": os.path.join(SAMPLE_DIR, "jd_frontend_senior.txt")},
 ]
 WIZARD_STEPS = ["样本简历", "JD 要求", "个人信息", "生成预览", "下载导出"]
-
-USER_TEXT_EXAMPLE = """我叫李思，邮箱 lisi@email.com，电话 13800002222。
-技能包括：Python、Django、FastAPI、Docker、MySQL、Redis、Linux。
-工作经历：
-2022年6月到2025年3月，在某互联网公司做 Python 后端开发，负责订单系统从单体拆分为微服务，
-用 FastAPI 重写了核心 API，性能提升了 3 倍，日均处理 200 万订单。
-还搭建了 CI/CD 流水线，用 Docker 容器化部署。
-2020年7月到2022年5月，在某创业公司做全栈开发，用 Django 写后端，Vue 写前端，
-独立负责用户系统和支付模块。
-学历：浙江大学 软件工程 本科 2016-2020"""
 
 
 # ============================================================
@@ -90,7 +79,6 @@ def initialize_session_state():
         "jd_name": None,
         "docs_indexed": False,
         "user_text": "",
-        "user_parsed": None,
         "workflow_result": None,
         "workflow_paused": False,       # True 表示工作流停在 check_parsed 断点，等待审核
         "paused_result": None,          # 断点暂停时的中间 state（含 base_resume + notifications）
@@ -182,7 +170,7 @@ def validate_current_step() -> bool:
     if step == 2:
         return st.session_state.jd_path is not None
     if step == 3:
-        return len(st.session_state.user_text.strip()) >= 20
+        return True  # 可选步骤
     if step == 4:
         return st.session_state.workflow_result is not None
     return True
@@ -456,53 +444,17 @@ def step_2_jd():
 # ============================================================
 
 def step_3_user_info():
-    st.header("③ 填写个人信息")
-    st.caption("用口语描述你的教育背景、技能和工作经历。AI 会自动提取结构化信息。")
+    st.header("③ 补充信息（可选）")
+    st.caption("你的工作经历已从经验库自动读取。这里可以补充简历侧重点、岗位理解、想强调或弱化的内容。")
 
-    user_text = st.text_area(
-        "自由描述",
+    supplement = st.text_area(
+        "补充指引",
         value=st.session_state.user_text,
-        height=250,
-        placeholder=USER_TEXT_EXAMPLE,
+        height=150,
+        placeholder="例如：突出高并发优化经验，弱化前端部分；希望简历体现团队管理能力；这个岗位偏架构方向，侧重系统设计经历",
         key="user_text_input",
     )
-    st.session_state.user_text = user_text
-
-    with st.expander("💡 参考写法（点击展开）"):
-        st.code(USER_TEXT_EXAMPLE, language=None)
-
-    # 输入量提示
-    char_count = len(user_text.strip())
-    if char_count == 0:
-        pass  # 刚进入页面，不打扰
-    elif char_count < 20:
-        st.caption(f"📝 已输入 {char_count} 字，还差 {20 - char_count} 字即可预览解析结果")
-
-    # 解析预览
-    if char_count >= 20:
-        if st.button("🔍 预览解析结果"):
-            with st.spinner("正在解析..."):
-                try:
-                    profile = parse_user_info(user_text)
-                    st.session_state.user_parsed = profile
-                    if not profile.name and not profile.skills:
-                        st.warning("未识别到姓名和技能，建议补充更多描述后再试。")
-                except Exception:
-                    st.session_state.user_parsed = None
-                    st.warning("解析失败，请检查输入内容后重试。这不影响后续生成，但建议至少包含姓名和技能信息。")
-
-        if st.session_state.user_parsed:
-            profile = st.session_state.user_parsed
-            st.subheader("解析结果")
-            st.write(f"**姓名**：{profile.name or '（未识别）'}")
-            st.write(f"**联系方式**：{profile.contact or '（未识别）'}")
-            if profile.skills:
-                st.write(f"**技能**：{', '.join(profile.skills)}")
-            if profile.experience:
-                st.write(f"**工作经历**（{len(profile.experience)} 段）：")
-                for exp in profile.experience:
-                    st.write(f"- {exp.title} @ {exp.company} ({exp.duration})")
-            st.write(f"**教育背景**：{profile.education or '（未识别）'}")
+    st.session_state.user_text = supplement
 
 
 # ============================================================
@@ -671,10 +623,11 @@ def step_4_generate_preview():
         with st.spinner("🤖 AI 正在生成基础简历... 这可能需要 20-40 秒"):
             try:
                 result = run_workflow(
-                    user_text=st.session_state.user_text,
+                    user_text=load_experience_bank(),
                     sample_resume_path=st.session_state.resume_path,
                     jd_path=st.session_state.jd_path,
                     thread_id=st.session_state.session_id,
+                    user_supplement=st.session_state.user_text,
                 )
 
                 errors = result.get("errors", [])

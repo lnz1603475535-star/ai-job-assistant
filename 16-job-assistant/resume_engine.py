@@ -166,6 +166,7 @@ def customize_for_jd(
     base_resume: str,
     jd_reqs: JDRequirements,
     notifications: list[str] | None = None,
+    user_supplement: str = "",
 ) -> str:
     """根据 JD 要求定制简历。返回定制后的 Markdown 文本。
 
@@ -177,6 +178,7 @@ def customize_for_jd(
         base_resume：generate_base_resume 生成的基础简历（Markdown）
         jd_reqs：extract_jd_requirements 提取的 JD 结构化要求
         notifications：上游节点的提醒（解析失败/降级等），Agent 会据此调整策略
+        user_supplement：用户对简历的补充指引（侧重点/弱化项/岗位看法），可选
     返回：
         定制后的 Markdown 格式简历
     """
@@ -211,6 +213,7 @@ def customize_for_jd(
         f"加分项：{', '.join(jd_reqs.nice_to_have)}\n"
         f"关键词：{', '.join(jd_reqs.keywords)}\n"
         f"隐性偏好：{jd_reqs.hidden_preferences}\n\n"
+        + (f"=== 用户偏好 ===\n{user_supplement}\n\n" if user_supplement.strip() else "") +
         f"=== 简历原文 ===\n{base_resume}"
     ))
 
