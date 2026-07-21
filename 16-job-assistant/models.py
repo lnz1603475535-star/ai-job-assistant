@@ -85,7 +85,10 @@ def validate_experience_markdown(text: str) -> tuple[bool, str]:
 
     # 1. 标题必须以 "## 项目" 开头
     if not first_line.startswith("## 项目"):
-        return False, f"标题格式错误：应以 '## 项目：...' 开头，当前为 '{first_line[:40]}'"
+        return False, (
+            f"AI 未按预期格式输出（当前输出以 '{first_line[:40]}' 开头）。"
+            "你可以直接手动编辑下方结果，或点击「提取并预览」重试。"
+        )
 
     # 2. 检查必填字段
     field_checks = [
@@ -96,14 +99,17 @@ def validate_experience_markdown(text: str) -> tuple[bool, str]:
     missing = [name for name, pattern in field_checks if not re.search(pattern, text)]
 
     if missing:
-        return False, f"缺少必填字段：{'、'.join(missing)}。请补充后重试，或手动编辑补全。"
+        return False, (
+            f"AI 提取结果缺少字段：{'、'.join(missing)}。"
+            "你可以在下方预览区手动补全后确认追加。"
+        )
 
     # 3. 检查是否有实际内容（非空字段，仅匹配同行）
     time_match = re.search(r"-\s*时间[：:][^\S\r\n]*([^\r\n]*)", text)
     role_match = re.search(r"-\s*角色[：:][^\S\r\n]*([^\r\n]*)", text)
     if time_match and not time_match.group(1).strip():
-        return False, "时间字段为空，请补充时间段信息。"
+        return False, "AI 提取的时间字段为空，请在预览区补全时间段。"
     if role_match and not role_match.group(1).strip():
-        return False, "角色字段为空，请补充职位名称。"
+        return False, "AI 提取的角色字段为空，请在预览区补全职位名称。"
 
     return True, "格式验证通过，可安全追加到经验库。"
