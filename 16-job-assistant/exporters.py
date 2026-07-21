@@ -1,0 +1,864 @@
+"""
+AI 简历生成器 - 导出模块（Round 5）
+===================================
+提供三种格式导出：PDF（fpdf2）、Word（python-docx）、HTML（markdown-it-py）。
+全部从 Markdown 字符串出发，返回值统一为 (result, error) 元组。
+"""
+
+import logging
+import os
+import re
+from io import BytesIO
+from typing import Optional, Tuple
+
+from markdown_it import MarkdownIt
+
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# 常量
+# ============================================================
+
+# 微软雅黑字体路径（Windows 11 默认安装）
+# TODO: Docker/Linux 部署阶段改为配置项或自动检测，Windows/Linux 字体路径不同
+_MSYH_FONT_PATH = "C:/Windows/Fonts/msyh.ttc"
+# PDF 页面设置
+_PDF_MARGIN_LR = 18       # 左右边距 mm
+_PDF_MARGIN_T = 0         # 上边距 mm（顶栏从 0 开始）
+_PDF_MARGIN_B = 12        # 下边距 mm
+_PDF_FONT_SIZE = 10.5     # 正文字号
+_PDF_FONT_SIZE_H1 = 18    # 姓名
+_PDF_FONT_SIZE_H2 = 13    # 章节标题
+_PDF_FONT_SIZE_H3 = 11.5  # 子标题
+_PDF_LINE_H = 5.5         # 行高 mm
+
+# PDF 配色
+_PDF_ACCENT = (43, 87, 154)       # 深蓝 #2b579a
+_PDF_ACCENT_LIGHT = (220, 230, 245)  # 浅蓝背景
+_PDF_TEXT_DARK = (50, 50, 50)     # 正文深灰
+_PDF_TEXT_MEDIUM = (100, 100, 100)  # 次要文字
+
+# Word 页面设置
+_DOCX_MARGIN = 2.54       # 页边距 cm（1 英寸）
+
+
+# ============================================================
+# Markdown 行级解析
+# ============================================================
+
+def _is_h1(line: str) -> bool:
+    """判断是否为一级标题 # xxx"""
+    return line.startswith("# ") and not line.startswith("## ")
+
+
+def _is_h2(line: str) -> bool:
+    """判断是否为二级标题 ## xxx"""
+    return line.startswith("## ") and not line.startswith("### ")
+
+
+def _is_h3(line: str) -> bool:
+    """判断是否为三级标题 ### xxx"""
+    return line.startswith("### ")
+
+
+def _is_list_item(line: str) -> bool:
+    """判断是否为列表项 - xxx 或 * xxx"""
+    stripped = line.lstrip()
+    return stripped.startswith("- ") or stripped.startswith("* ")
+
+
+def _is_horizontal_rule(line: str) -> bool:
+    """判断是否为分割线 --- 或 ***"""
+    s = line.strip()
+    return s in ("---", "***", "___") or (len(s) >= 3 and all(c == s[0] for c in s) and s[0] in "-*_")
+
+
+def _strip_inline_format(text: str) -> str:
+    """去除行内 Markdown 格式（粗体/斜体/代码/链接），返回纯文本。"""
+    # 链接 [text](url) → text
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    # 图片 ![alt](url) → alt
+    text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    # 行内代码 `code`
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    # 粗斜体 ***text***
+    text = re.sub(r"\*{3}([^*]+)\*{3}", r"\1", text)
+    # 粗体 **text**
+    text = re.sub(r"\*{2}([^*]+)\*{2}", r"\1", text)
+    # 斜体 *text*
+    text = re.sub(r"\*([^*]+)\*", r"\1", text)
+    return text
+
+
+def _count_leading_spaces(line: str) -> int:
+    """计算行首空格数（用于嵌套列表判断）。"""
+    return len(line) - len(line.lstrip())
+
+
+def _strip_list_item_content(line: str) -> str:
+    """从列表项行中提取内容文本，正确去除列表标记（- 或 * ）。
+
+    与 lstrip("-* ") 不同，此函数只去除行首空格和第一个列表标记，
+    不会误删内容中以 * 或 - 开头的字符。
+
+    Example:
+        "  - **Python** 是主力语言" → "**Python** 是主力语言"
+        "- *斜体内容*" → "*斜体内容*"
+    """
+    stripped = line.lstrip()
+    if stripped.startswith("- "):
+        return _strip_inline_format(stripped[2:].strip())
+    if stripped.startswith("* "):
+        return _strip_inline_format(stripped[2:].strip())
+    # 兜底：不是标准列表标记，返回原文
+    return _strip_inline_format(stripped)
+
+
+# ============================================================
+# HTML 导出
+# ============================================================
+
+_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>简历</title>
+<style>
+  :root {{
+    --accent: #2b579a;
+    --accent-light: #e8f0fa;
+    --text: #333;
+    --text-light: #666;
+    --border: #e0e0e0;
+  }}
+  @page {{ size: A4; margin: 0; }}
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+
+  body {{
+    font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    font-size: 11pt;
+    line-height: 1.8;
+    color: var(--text);
+    max-width: 210mm;
+    margin: 0 auto;
+  }}
+
+  /* ── 顶栏 ── */
+  .header-bar {{
+    background: var(--accent);
+    color: #fff;
+    padding: 18px 40px 12px;
+  }}
+  .header-bar .name {{
+    font-size: 20pt;
+    font-weight: 700;
+    letter-spacing: 2px;
+  }}
+  .header-bar .job-target {{
+    font-size: 11pt;
+    color: rgba(255,255,255,0.85);
+    margin-top: 2px;
+  }}
+
+  /* ── 联系方式 ── */
+  .contact-row {{
+    color: var(--text-light);
+    font-size: 10pt;
+    padding: 10px 40px;
+    border-bottom: 1px solid var(--border);
+  }}
+
+  /* ── 正文区 ── */
+  .content {{ padding: 10px 40px 30px; }}
+
+  /* ── 章节标题 ── */
+  .content h2 {{
+    font-size: 13pt;
+    color: var(--accent);
+    border-left: 4px solid var(--accent);
+    padding: 4px 0 4px 10px;
+    margin: 22px 0 10px;
+    background: var(--accent-light);
+  }}
+
+  /* ── 子标题 ── */
+  .content h3 {{
+    font-size: 11.5pt;
+    font-weight: 600;
+    margin: 14px 0 4px;
+    padding: 3px 8px;
+    background: var(--accent-light);
+    display: inline-block;
+  }}
+
+  /* ── 列表 ── */
+  .content ul {{
+    padding-left: 20px;
+    margin: 6px 0;
+    list-style: none;
+  }}
+  .content ul li {{
+    position: relative;
+    padding-left: 14px;
+    margin-bottom: 3px;
+  }}
+  .content ul li::before {{
+    content: "•";
+    position: absolute;
+    left: 0;
+    color: var(--accent);
+    font-weight: bold;
+  }}
+
+  /* ── 段落 ── */
+  .content p {{ margin: 4px 0; }}
+
+  /* ── 分割线 ── */
+  .content hr {{
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 14px 0;
+  }}
+
+  /* ── 打印 ── */
+  @media print {{
+    body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+  }}
+</style>
+</head>
+<body>
+<div class="header-bar">
+  <div class="name">{name}</div>
+  {job_target_html}
+</div>
+<div class="contact-row">{contact}</div>
+<div class="content">
+{body}
+</div>
+</body>
+</html>"""
+
+
+def markdown_to_html(md_text: str, job_target: str = "") -> str:
+    """将 Markdown 简历文本转换为完整 HTML 页面。
+
+    自动提取第一行作为姓名、第二行作为联系方式放入顶栏，
+    其余内容在带样式的正文区渲染。
+
+    Args:
+        md_text: Markdown 格式的简历文本。
+        job_target: 可选，求职意向（如"Python 后端工程师"），显示在顶栏右侧。
+
+    Returns:
+        完整的 HTML 字符串（含内嵌 CSS），可直接在浏览器打开或打印为 PDF。
+
+    Raises:
+        ValueError: 输入为空或无效。
+    """
+    if not md_text or not md_text.strip():
+        raise ValueError("简历内容为空，无法生成 HTML。")
+
+    try:
+        lines = md_text.strip().splitlines()
+        # 提取姓名（h1）和联系方式（紧跟 h1 的非空、非标题行）
+        name = ""
+        contact = ""
+        body_start = 0
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if _is_h1(stripped) and not name:
+                name = _strip_inline_format(stripped.lstrip("# ").strip())
+            elif name and not contact and not _is_h2(stripped) and not _is_h3(stripped):
+                contact = _strip_inline_format(stripped)
+                body_start = i + 1
+                break
+            elif not name:
+                body_start = i
+                break
+
+        # 求职意向 HTML
+        if job_target:
+            job_target_html = f'<div class="job-target">求职意向：{job_target}</div>'
+        else:
+            job_target_html = ""
+
+        # 渲染正文（跳过已提取的顶栏内容）
+        body_md = "\n".join(lines[body_start:]).strip()
+        md = MarkdownIt()
+        body_html = md.render(body_md)
+        return _HTML_TEMPLATE.format(
+            name=name, contact=contact, body=body_html, job_target_html=job_target_html
+        )
+    except Exception:
+        logger.exception("Markdown → HTML 转换失败")
+        raise ValueError("HTML 生成失败，请检查简历内容格式。") from None
+
+
+# ============================================================
+# PDF 导出（fpdf2）
+# ============================================================
+
+def _check_font() -> Tuple[bool, str]:
+    """检查微软雅黑字体是否可用。"""
+    if os.path.exists(_MSYH_FONT_PATH):
+        return True, _MSYH_FONT_PATH
+    # 尝试备选字体
+    for alt in ["C:/Windows/Fonts/simhei.ttf", "C:/Windows/Fonts/simsun.ttc"]:
+        if os.path.exists(alt):
+            return True, alt
+    return False, ""
+
+
+def _embed_photo(pdf: "FPDF", photo_path: str):
+    """在 PDF 当前页右上角嵌入照片。
+
+    照片尺寸 25×35mm（标准一寸），位置：右上角对齐页边距。
+    嵌入后光标保持在页面顶部，不影响后续文字排版。
+    """
+    photo_w, photo_h = 25, 35  # mm，标准一寸照比例
+    x = pdf.w - _PDF_MARGIN_LR - photo_w
+    y = _PDF_MARGIN_T
+    try:
+        pdf.image(photo_path, x=x, y=y, w=photo_w, h=photo_h)
+    except (OSError, RuntimeError) as e:
+        logger.warning("照片嵌入失败（%s），将跳过：%s", photo_path, _sanitize_error(e), exc_info=True)
+
+
+def _add_pdf_top_bar(pdf: "FPDF", name: str, job_target: str = ""):
+    """绘制顶部深蓝色条幅。姓名在上，求职意向在下，均靠左。"""
+    bar_h = 30 if job_target else 24  # 有求职意向时顶栏稍高
+    # 深蓝背景条
+    pdf.set_fill_color(*_PDF_ACCENT)
+    pdf.rect(0, 0, pdf.w, bar_h, style="F")
+    # 白色姓名——靠左
+    pdf.set_y(5)
+    pdf.set_x(_PDF_MARGIN_LR)
+    pdf.set_font("msyh", "", _PDF_FONT_SIZE_H1)
+    pdf.set_text_color(255, 255, 255)
+    pdf.cell(0, 10, name, new_x="LMARGIN", new_y="NEXT", align="L")
+    # 求职意向——靠左，姓名下方
+    if job_target:
+        pdf.set_x(_PDF_MARGIN_LR)
+        pdf.set_font("msyh", "", 10)
+        pdf.set_text_color(180, 200, 230)
+        pdf.cell(0, 6, f"求职意向：{job_target}", new_x="LMARGIN", new_y="NEXT", align="L")
+    pdf.set_text_color(*_PDF_TEXT_DARK)
+    pdf.set_y(bar_h + 4)
+
+
+def _add_pdf_section_header(pdf: "FPDF", title: str):
+    """绘制带左侧色条的章节标题。"""
+    pdf.ln(3)
+    pdf.set_fill_color(*_PDF_ACCENT)
+    pdf.set_text_color(*_PDF_ACCENT)
+    pdf.set_font("msyh", "", _PDF_FONT_SIZE_H2)
+    # 左侧色块
+    pdf.rect(_PDF_MARGIN_LR, pdf.get_y() + 1, 3, 6, style="F")
+    pdf.set_x(_PDF_MARGIN_LR + 6)
+    pdf.cell(0, _PDF_LINE_H + 2, title, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(*_PDF_TEXT_DARK)
+    # 底部细线
+    y = pdf.get_y()
+    pdf.set_draw_color(*_PDF_ACCENT)
+    pdf.line(_PDF_MARGIN_LR, y + 1, pdf.w - _PDF_MARGIN_LR, y + 1)
+    pdf.ln(3)
+
+
+def _add_pdf_sub_header(pdf: "FPDF", title: str):
+    """绘制子标题（公司-职位），带浅蓝背景。"""
+    pdf.set_fill_color(*_PDF_ACCENT_LIGHT)
+    pdf.set_font("msyh", "", _PDF_FONT_SIZE_H3)
+    pdf.set_text_color(*_PDF_TEXT_DARK)
+    x0 = _PDF_MARGIN_LR
+    pdf.set_x(x0)
+    # 先量宽度再画背景
+    text_w = pdf.get_string_width(title) + 4
+    pdf.rect(x0, pdf.get_y(), text_w, _PDF_LINE_H + 2, style="F")
+    pdf.set_xy(x0 + 2, pdf.get_y() + 1)
+    pdf.cell(text_w - 2, _PDF_LINE_H, title, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+
+
+def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
+                         job_target: str = "") -> Tuple[Optional[bytes], Optional[str]]:
+    """将 Markdown 简历文本转换为 PDF bytes。
+
+    Args:
+        md_text: Markdown 格式的简历文本。
+        photo_path: 可选的照片文件路径（JPG/PNG），放置在首页右上角。
+        job_target: 可选，求职意向（如"Python 后端工程师"），显示在顶栏右侧。
+
+    Returns:
+        (pdf_bytes, None) 成功时； (None, error_message) 失败时。
+    """
+    if not md_text or not md_text.strip():
+        return None, "简历内容为空，无法生成 PDF。"
+
+    # 检查字体
+    font_ok, font_path = _check_font()
+    if not font_ok:
+        logger.error("PDF 导出失败：未找到中文字体文件")
+        return None, (
+            "PDF 生成失败：未找到中文字体（微软雅黑/黑体/宋体）。"
+            "请确认 C:\\Windows\\Fonts 目录下有中文字体文件。"
+        )
+
+    try:
+        from fpdf import FPDF
+    except ImportError:
+        return None, "PDF 生成失败：fpdf2 库未安装，请运行 pip install fpdf2。"
+
+    # 验证照片文件
+    if photo_path and not os.path.exists(photo_path):
+        logger.warning("照片文件不存在：%s，将跳过照片嵌入", photo_path)
+        photo_path = None
+
+    try:
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=_PDF_MARGIN_B)
+        pdf.add_page()
+        pdf.add_font("msyh", "", font_path)
+        pdf.set_font("msyh", "", _PDF_FONT_SIZE)
+        pdf.set_text_color(*_PDF_TEXT_DARK)
+        pdf.set_draw_color(*_PDF_ACCENT)
+
+        lines = md_text.strip().splitlines()
+
+        # ── 第一遍：提取姓名（第一行 h1），用于顶栏 ──
+        name = ""
+        content_start = 0
+        for i, line in enumerate(lines):
+            if _is_h1(line):
+                name = _strip_inline_format(line.lstrip("# ").strip())
+                content_start = i + 1
+                break
+
+        # 绘制顶栏（姓名靠左 + 求职意向靠右）
+        _add_pdf_top_bar(pdf, name, job_target)
+
+        # 嵌入照片（首页右上角，顶栏上方）
+        if photo_path:
+            _embed_photo(pdf, photo_path)
+
+        # ── 第二遍：渲染正文 ──
+        i = content_start
+        while i < len(lines):
+            line = lines[i]
+
+            # 空行
+            if not line.strip():
+                pdf.ln(_PDF_LINE_H * 0.6)
+                i += 1
+                continue
+
+            # 分割线
+            if _is_horizontal_rule(line):
+                pdf.ln(2)
+                y = pdf.get_y()
+                pdf.set_draw_color(*_PDF_ACCENT)
+                pdf.line(_PDF_MARGIN_LR, y, pdf.w - _PDF_MARGIN_LR, y)
+                pdf.ln(3)
+                i += 1
+                continue
+
+            # 二级标题
+            if _is_h2(line):
+                title = _strip_inline_format(line.lstrip("# ").strip())
+                _add_pdf_section_header(pdf, title)
+                i += 1
+                continue
+
+            # 三级标题
+            if _is_h3(line):
+                title = _strip_inline_format(line.lstrip("# ").strip())
+                _add_pdf_sub_header(pdf, title)
+                i += 1
+                continue
+
+            # 列表项
+            if _is_list_item(line):
+                indent = _count_leading_spaces(line)
+                pdf.set_font("msyh", "", _PDF_FONT_SIZE)
+                content = _strip_list_item_content(line)
+                x_offset = _PDF_MARGIN_LR + 4 + min(indent, 8) * 2.5
+                bullet = "•" if indent <= 2 else "–"
+                available_w = pdf.w - x_offset - _PDF_MARGIN_LR
+                pdf.set_x(x_offset - 4)
+                pdf.set_text_color(*_PDF_ACCENT)
+                pdf.cell(4, _PDF_LINE_H, bullet, new_x="RIGHT", new_y="TOP")
+                pdf.set_text_color(*_PDF_TEXT_DARK)
+                pdf.multi_cell(available_w, _PDF_LINE_H, content, new_x="LMARGIN", new_y="NEXT")
+                i += 1
+                continue
+
+            # 普通段落（联系方式等）
+            pdf.set_font("msyh", "", _PDF_FONT_SIZE)
+            content = _strip_inline_format(line.strip())
+            pdf.set_text_color(*_PDF_TEXT_MEDIUM)
+            # 联系方式用紧凑格式
+            if "@" in content or "|" in content or "电话" in content:
+                pdf.set_x(_PDF_MARGIN_LR)
+                pdf.cell(pdf.w - _PDF_MARGIN_LR * 2, _PDF_LINE_H, content,
+                        new_x="LMARGIN", new_y="NEXT", align="L")
+            else:
+                pdf.set_text_color(*_PDF_TEXT_DARK)
+                pdf.multi_cell(pdf.w - _PDF_MARGIN_LR * 2, _PDF_LINE_H, content,
+                              new_x="LMARGIN", new_y="NEXT", align="L")
+            i += 1
+
+        pdf_bytes = pdf.output()
+        return pdf_bytes, None
+
+    except Exception as e:
+        logger.exception("PDF 生成失败")
+        return None, f"PDF 生成失败：{_sanitize_error(e)}"
+
+
+# ============================================================
+# Word 导出（python-docx）
+# ============================================================
+
+# 颜色常量
+_DOCX_ACCENT_RGB = 0x2B579A
+_DOCX_ACCENT_LIGHT_RGB = 0xE8F0FA
+
+
+def _docx_add_header_bar(doc, name: str, job_target: str = ""):
+    """在 Word 文档开头创建深蓝顶栏（段落背景着色）。"""
+    import docx
+    from docx.shared import Pt
+    from docx.oxml.ns import qn
+
+    para = doc.add_paragraph()
+    para.paragraph_format.space_after = Pt(0)
+    para.paragraph_format.space_before = Pt(0)
+    # 段落背景色
+    pPr = para._element.get_or_add_pPr()
+    shd = docx.oxml.OxmlElement("w:shd")
+    shd.set(qn("w:fill"), "2B579A")
+    shd.set(qn("w:val"), "clear")
+    pPr.append(shd)
+
+    # 姓名——白色大字
+    run = para.add_run(name)
+    run.bold = True
+    run.font.size = Pt(20)
+    run.font.color.rgb = docx.shared.RGBColor(0xFF, 0xFF, 0xFF)
+    run.font.name = "微软雅黑"
+
+    if job_target:
+        run = para.add_run(f"\n求职意向：{job_target}")
+        run.font.size = Pt(11)
+        run.font.color.rgb = docx.shared.RGBColor(0xB4, 0xC8, 0xE6)
+        run.font.name = "微软雅黑"
+
+
+def _docx_add_section_header(doc, title: str):
+    """添加带左侧蓝色边框 + 浅蓝背景的章节标题。"""
+    import docx
+    from docx.shared import Pt
+    from docx.oxml.ns import qn
+
+    para = doc.add_paragraph()
+    para.paragraph_format.space_before = Pt(14)
+    para.paragraph_format.space_after = Pt(4)
+    # 浅蓝背景
+    pPr = para._element.get_or_add_pPr()
+    shd = docx.oxml.OxmlElement("w:shd")
+    shd.set(qn("w:fill"), "E8F0FA")
+    shd.set(qn("w:val"), "clear")
+    pPr.append(shd)
+    # 左侧蓝色边框
+    pBdr = docx.oxml.OxmlElement("w:pBdr")
+    left = docx.oxml.OxmlElement("w:left")
+    left.set(qn("w:val"), "single")
+    left.set(qn("w:sz"), "12")
+    left.set(qn("w:space"), "6")
+    left.set(qn("w:color"), "2B579A")
+    pBdr.append(left)
+    pPr.append(pBdr)
+    # 下方细线边框
+    bottom = docx.oxml.OxmlElement("w:bottom")
+    bottom.set(qn("w:val"), "single")
+    bottom.set(qn("w:sz"), "4")
+    bottom.set(qn("w:space"), "1")
+    bottom.set(qn("w:color"), "2B579A")
+    pBdr.append(bottom)
+
+    run = para.add_run(title)
+    run.bold = True
+    run.font.size = Pt(13)
+    run.font.color.rgb = docx.shared.RGBColor(0x2B, 0x57, 0x9A)
+    run.font.name = "微软雅黑"
+
+
+def _docx_add_sub_header(doc, title: str):
+    """添加带浅蓝背景的子标题（公司-职位）。"""
+    import docx
+    from docx.shared import Pt
+    from docx.oxml.ns import qn
+
+    para = doc.add_paragraph()
+    para.paragraph_format.space_before = Pt(10)
+    para.paragraph_format.space_after = Pt(2)
+    # 浅蓝背景
+    pPr = para._element.get_or_add_pPr()
+    shd = docx.oxml.OxmlElement("w:shd")
+    shd.set(qn("w:fill"), "E8F0FA")
+    shd.set(qn("w:val"), "clear")
+    pPr.append(shd)
+
+    run = para.add_run(title)
+    run.bold = True
+    run.font.size = Pt(11.5)
+    run.font.color.rgb = docx.shared.RGBColor(0x2B, 0x57, 0x9A)
+    run.font.name = "微软雅黑"
+
+
+def _docx_add_paragraph_with_format(doc, text: str):
+    """向 Word 文档添加段落，支持行内粗体/斜体格式。"""
+    from docx.shared import Pt
+
+    if text is None:
+        text = ""
+
+    para = doc.add_paragraph()
+    pattern = re.compile(r"(\*{1,3})(.+?)\1")
+    last_end = 0
+    for match in pattern.finditer(text):
+        before = text[last_end:match.start()]
+        if before:
+            run = para.add_run(before)
+            run.font.size = Pt(11)
+            run.font.name = "微软雅黑"
+        stars = match.group(1)
+        formatted = match.group(2)
+        run = para.add_run(formatted)
+        run.bold = len(stars) >= 2
+        run.italic = len(stars) in (1, 3)
+        run.font.size = Pt(11)
+        run.font.name = "微软雅黑"
+        last_end = match.end()
+
+    tail = text[last_end:]
+    if tail:
+        run = para.add_run(tail)
+        run.font.size = Pt(11)
+        run.font.name = "微软雅黑"
+
+    if not pattern.search(text) and not text:
+        run = para.add_run("")
+        run.font.size = Pt(11)
+        run.font.name = "微软雅黑"
+
+    return para
+
+
+def markdown_to_docx_bytes(md_text: str, job_target: str = "") -> Tuple[Optional[bytes], Optional[str]]:
+    """将 Markdown 简历文本转换为 Word (.docx) bytes。
+
+    Args:
+        md_text: Markdown 格式的简历文本。
+        job_target: 可选，求职意向，显示在顶栏。
+
+    Returns:
+        (docx_bytes, None) 成功时； (None, error_message) 失败时。
+    """
+    if not md_text or not md_text.strip():
+        return None, "简历内容为空，无法生成 Word 文档。"
+
+    try:
+        import docx
+        from docx.shared import Pt, Cm
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+    except ImportError:
+        return None, "Word 生成失败：python-docx 库未安装，请运行 pip install python-docx。"
+
+    try:
+        doc = docx.Document()
+
+        # 页面设置
+        for section in doc.sections:
+            section.top_margin = Cm(0)       # 顶栏从页面顶部开始
+            section.bottom_margin = Cm(_DOCX_MARGIN)
+            section.left_margin = Cm(_DOCX_MARGIN)
+            section.right_margin = Cm(_DOCX_MARGIN)
+
+        # 设置默认字体
+        style = doc.styles["Normal"]
+        style.font.size = Pt(11)
+        style.font.name = "微软雅黑"
+        style.paragraph_format.space_after = Pt(4)
+        style.paragraph_format.line_spacing = 1.5
+
+        lines = md_text.strip().splitlines()
+
+        # ── 第一遍：提取姓名 ──
+        name = ""
+        content_start = 0
+        for i, line in enumerate(lines):
+            if _is_h1(line):
+                name = _strip_inline_format(line.lstrip("# ").strip())
+                content_start = i + 1
+                break
+
+        # ── 顶栏 ──
+        _docx_add_header_bar(doc, name, job_target)
+
+        # ── 第二遍：渲染正文 ──
+        i = content_start
+        while i < len(lines):
+            line = lines[i]
+
+            if not line.strip():
+                doc.add_paragraph("")
+                i += 1
+                continue
+
+            if _is_horizontal_rule(line):
+                hr_para = doc.add_paragraph()
+                hr_para.paragraph_format.space_before = Pt(6)
+                hr_para.paragraph_format.space_after = Pt(6)
+                run = hr_para.add_run("─" * 60)
+                run.font.size = Pt(8)
+                run.font.color.rgb = docx.shared.RGBColor(0xCC, 0xCC, 0xCC)
+                i += 1
+                continue
+
+            # 跳过 h1（已在顶栏处理）
+            if _is_h1(line):
+                i += 1
+                continue
+
+            if _is_h2(line):
+                title = _strip_inline_format(line.lstrip("# ").strip())
+                _docx_add_section_header(doc, title)
+                i += 1
+                continue
+
+            if _is_h3(line):
+                title = _strip_inline_format(line.lstrip("# ").strip())
+                _docx_add_sub_header(doc, title)
+                i += 1
+                continue
+
+            if _is_list_item(line):
+                indent = _count_leading_spaces(line)
+                content = _strip_list_item_content(line)
+                para = doc.add_paragraph(style="List Bullet")
+                para.paragraph_format.left_indent = Cm(1.27 + indent * 0.32)
+                para.clear()
+                run = para.add_run(content)
+                run.font.size = Pt(11)
+                run.font.name = "微软雅黑"
+                i += 1
+                continue
+
+            # 普通段落（联系方式等）
+            para = doc.add_paragraph()
+            content = _strip_inline_format(line.strip())
+            run = para.add_run(content)
+            run.font.size = Pt(11)
+            run.font.name = "微软雅黑"
+            # 联系方式用灰色
+            if "@" in content or "|" in content or "电话" in content:
+                run.font.color.rgb = docx.shared.RGBColor(0x66, 0x66, 0x66)
+                para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            i += 1
+
+        buf = BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+        return buf.getvalue(), None
+
+    except Exception as e:
+        logger.exception("Word 文档生成失败")
+        return None, f"Word 生成失败：{_sanitize_error(e)}"
+
+
+# ============================================================
+# 辅助函数
+# ============================================================
+
+def _sanitize_error(exc: Exception) -> str:
+    """脱敏异常信息：替换用户目录路径，截断到 200 字符。"""
+    msg = str(exc)
+    home = os.path.expanduser("~")
+    if home and home != "~":
+        msg = msg.replace(home, "~")
+    return msg[:200]
+
+
+# ============================================================
+# 独立运行冒烟测试
+# ============================================================
+
+if __name__ == "__main__":
+    SAMPLE_MD = """# 张三
+
+联系方式：zhangsan@email.com | 138-0000-0001
+
+## 专业技能
+- Python， Django， FastAPI， Docker， MySQL
+- Redis， Linux， Git， CI/CD
+- 微服务架构， RESTful API 设计
+
+## 工作经历
+
+### ABC 科技 - 高级后端工程师（2022.06-2025.03）
+- 负责订单系统从**单体架构拆分为微服务**，用 FastAPI 重写核心 API
+- 性能提升 **3 倍**，日均处理 200 万订单
+- 搭建 CI/CD 流水线，用 Docker 容器化部署，部署效率提升 80%
+
+### XYZ 创业 - 全栈开发工程师（2020.07-2022.05）
+- 独立负责用户系统和支付模块开发
+- 用 Django + Vue 技术栈完成 3 个核心项目
+
+## 教育背景
+- 浙江大学 软件工程 本科 2016-2020
+"""
+
+    print("=" * 60)
+    print("  导出模块冒烟测试")
+    print("=" * 60)
+
+    # HTML
+    print("\n[1/3] 测试 HTML 导出...")
+    try:
+        html = markdown_to_html(SAMPLE_MD)
+        print(f"  ✅ HTML 生成成功 ({len(html)} 字符)")
+    except ValueError as e:
+        print(f"  ❌ HTML 失败: {e}")
+
+    # PDF
+    print("\n[2/3] 测试 PDF 导出...")
+    pdf_bytes, pdf_err = markdown_to_pdf_bytes(SAMPLE_MD)
+    if pdf_err:
+        print(f"  ❌ PDF 失败: {pdf_err}")
+    else:
+        import os
+        out_path = os.path.join(os.path.dirname(__file__), "data", "_test_export.pdf")
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "wb") as f:
+            f.write(pdf_bytes)
+        print(f"  ✅ PDF 生成成功 ({len(pdf_bytes)} bytes) → {out_path}")
+
+    # Word
+    print("\n[3/3] 测试 Word 导出...")
+    docx_bytes, docx_err = markdown_to_docx_bytes(SAMPLE_MD)
+    if docx_err:
+        print(f"  ❌ Word 失败: {docx_err}")
+    else:
+        import os
+        out_path = os.path.join(os.path.dirname(__file__), "data", "_test_export.docx")
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "wb") as f:
+            f.write(docx_bytes)
+        print(f"  ✅ Word 生成成功 ({len(docx_bytes)} bytes) → {out_path}")
+
+    print("\n" + "=" * 60)
+    print("  冒烟测试完成")
+    print("=" * 60)

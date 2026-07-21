@@ -1,8 +1,9 @@
 """
-终端测试脚本 — Round 4
+终端测试脚本 — Round 5
 ======================
 验证 LangGraph 工作流全链路：索引文档 → 运行工作流（断点暂停）
-→ 审核后恢复执行 → JD 定制。与 app.py 走相同的调用路径。
+→ 审核后恢复执行 → JD 定制 → 导出 PDF/Word。
+与 app.py 走相同的调用路径。
 
 运行：python terminal_test.py
 """
@@ -142,9 +143,54 @@ def test_workflow():
 
     print("\n" + "=" * 60)
     if all_pass:
-        print("  全部通过！Round 4 改造完成。")
+        print("  全部通过！Round 5 改造完成。")
     else:
         print("  部分检查未通过，请检查上述 FAIL 项。")
+    print("=" * 60)
+
+    # ── Round 5 新增：导出验证 ──
+    print("\n" + "─" * 60)
+    print("[5/5] 导出验证（PDF + Word + HTML）...")
+    print("─" * 60)
+
+    from exporters import markdown_to_pdf_bytes, markdown_to_docx_bytes, markdown_to_html
+
+    export_checks = []
+
+    # HTML
+    try:
+        html = markdown_to_html(customized)
+        export_checks.append(("HTML 导出", len(html) > 500, None))
+    except ValueError as e:
+        export_checks.append(("HTML 导出", False, str(e)))
+
+    # PDF
+    pdf_bytes, pdf_err = markdown_to_pdf_bytes(customized)
+    export_checks.append(("PDF 导出", pdf_err is None and pdf_bytes is not None and len(pdf_bytes) > 1000, pdf_err))
+
+    # Word
+    docx_bytes, docx_err = markdown_to_docx_bytes(customized)
+    export_checks.append(("Word 导出", docx_err is None and docx_bytes is not None and len(docx_bytes) > 1000, docx_err))
+
+    for desc, okay, err_msg in export_checks:
+        status = "PASS" if okay else "FAIL"
+        detail = f" — {err_msg}" if err_msg else ""
+        print(f"  [{status}] {desc}{detail}")
+
+    # 保存导出文件到 data 目录
+    if pdf_bytes:
+        pdf_path = os.path.join(DATA_DIR, "_test_export_terminal.pdf")
+        with open(pdf_path, "wb") as f:
+            f.write(pdf_bytes)
+        print(f"  [INFO] PDF 已保存到 {pdf_path}")
+    if docx_bytes:
+        docx_path = os.path.join(DATA_DIR, "_test_export_terminal.docx")
+        with open(docx_path, "wb") as f:
+            f.write(docx_bytes)
+        print(f"  [INFO] Word 已保存到 {docx_path}")
+
+    print("\n" + "=" * 60)
+    print("  Round 5 全部测试完成。")
     print("=" * 60)
 
 

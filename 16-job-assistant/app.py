@@ -24,6 +24,7 @@ from core import (
 from workflow import run_workflow, resume_workflow
 from prompts import EXPERIENCE_EXTRACTION_PROMPT
 from models import validate_experience_markdown
+from exporters import markdown_to_pdf_bytes, markdown_to_docx_bytes
 
 # ============================================================
 # 常量
@@ -88,6 +89,11 @@ def initialize_session_state():
         "ai_extract_result": None,
         "index_error": None,
         "index_error_detail": "",
+        "export_base_pdf": None,
+        "export_base_docx": None,
+        "export_customized_pdf": None,
+        "export_customized_docx": None,
+        "user_photo_path": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -184,6 +190,12 @@ def _reset_workflow_state() -> None:
     st.session_state.paused_result = None
     st.session_state.processing = False
     st.session_state.session_id = str(uuid.uuid4())
+    # 清除导出缓存（重新生成简历后需要重新导出）
+    st.session_state.export_base_pdf = None
+    st.session_state.export_base_docx = None
+    st.session_state.export_customized_pdf = None
+    st.session_state.export_customized_docx = None
+    # 注意：user_photo_path 不清除——用户不希望重新上传照片
 
 
 def index_documents_if_needed():
@@ -205,6 +217,7 @@ def index_documents_if_needed():
             st.session_state.index_error = None
             st.toast(f"✅ 已索引 {len(chunks)} 个文本块")
         except (UnicodeDecodeError, ValueError) as e:
+            logger.error("文档索引失败（编码/格式错误）：%s", _sanitize_error(e))
             error_str = str(e).lower()
             if "不存在" in error_str or "无法访问" in error_str or "not found" in error_str:
                 st.session_state.index_error = "missing"
@@ -220,6 +233,7 @@ def index_documents_if_needed():
                 st.session_state.index_error = "unknown"
                 st.session_state.index_error_detail = _sanitize_error(e)
         except Exception as e:
+            logger.exception("文档索引失败（未知错误）")
             error_str = str(e).lower()
             if "empty" in error_str or "no text" in error_str:
                 st.session_state.index_error = "empty"
@@ -458,6 +472,38 @@ def step_3_user_info():
     )
     st.session_state.user_text = supplement
 
+    st.divider()
+
+    # 照片上传（可选，嵌入 PDF 简历首页右上角）
+    st.caption("📷 **简历照片**（可选，仅用于 PDF 导出）")
+    uploaded_photo = st.file_uploader(
+        "上传照片",
+        type=["jpg", "jpeg", "png"],
+        key="step3_photo_uploader",
+        label_visibility="collapsed",
+    )
+    if uploaded_photo:
+        path, error = save_uploaded_file(uploaded_photo, "photo")
+        if error:
+            st.error(f"❌ {error}")
+            st.session_state.user_photo_path = None
+        else:
+            st.session_state.user_photo_path = path
+            st.toast(f"✅ 已上传照片：{uploaded_photo.name}")
+            # 预览
+            st.image(uploaded_photo.getvalue(), width=80, caption=uploaded_photo.name)
+    elif st.session_state.user_photo_path:
+        # 之前上传过，显示预览
+        try:
+            st.image(st.session_state.user_photo_path, width=80, caption="当前照片")
+        except Exception:
+            logger.warning("照片文件加载失败，已清除：%s", st.session_state.user_photo_path, exc_info=True)
+            st.session_state.user_photo_path = None
+            st.warning("照片文件已失效，请重新上传。")
+        if st.button("🗑 移除照片", key="remove_photo"):
+            st.session_state.user_photo_path = None
+            st.rerun()
+
 
 # ============================================================
 # Step 4：生成预览
@@ -574,7 +620,7 @@ def step_4_generate_preview():
                         st.session_state.paused_result = None
                         st.rerun()
                     except RuntimeError:
-                        logger.warning("resume_workflow 失败：checkpoint 不存在")
+                        logger.warning("resume_workflow 失败：checkpoint 不存在", exc_info=True)
                         st.error(
                             "工作流状态丢失，无法继续。请点击下方「重新生成」按钮重新开始。"
                             "这通常是因为服务重启导致缓存被清空。"
@@ -685,44 +731,182 @@ def step_4_generate_preview():
 # Step 5：下载导出
 # ============================================================
 
+def _ensure_export_cache(result: dict):
+    """确保导出 bytes 已缓存到 session_state，避免每次 rerun 重新生成。"""
+    base = result.get("base_resume", "")
+    customized = result.get("customized_resume", "")
+
+    photo = st.session_state.get("user_photo_path")
+    jd_reqs = result.get("jd_requirements")
+    job_target = jd_reqs.title if jd_reqs else ""
+
+    if st.session_state.export_customized_pdf is None and customized:
+        pdf_bytes, pdf_err = markdown_to_pdf_bytes(customized, photo_path=photo, job_target=job_target)
+        if pdf_err:
+            logger.error("定制简历 PDF 导出失败：%s", pdf_err)
+            st.session_state.export_customized_pdf = ("error", pdf_err)
+        else:
+            st.session_state.export_customized_pdf = ("ok", pdf_bytes)
+
+    if st.session_state.export_customized_docx is None and customized:
+        docx_bytes, docx_err = markdown_to_docx_bytes(customized, job_target=job_target)
+        if docx_err:
+            logger.error("定制简历 Word 导出失败：%s", docx_err)
+            st.session_state.export_customized_docx = ("error", docx_err)
+        else:
+            st.session_state.export_customized_docx = ("ok", docx_bytes)
+
+    if st.session_state.export_base_pdf is None and base:
+        pdf_bytes, pdf_err = markdown_to_pdf_bytes(base, photo_path=photo, job_target=job_target)
+        if pdf_err:
+            logger.error("基础简历 PDF 导出失败：%s", pdf_err)
+            st.session_state.export_base_pdf = ("error", pdf_err)
+        else:
+            st.session_state.export_base_pdf = ("ok", pdf_bytes)
+
+    if st.session_state.export_base_docx is None and base:
+        docx_bytes, docx_err = markdown_to_docx_bytes(base, job_target=job_target)
+        if docx_err:
+            logger.error("基础简历 Word 导出失败：%s", docx_err)
+            st.session_state.export_base_docx = ("error", docx_err)
+        else:
+            st.session_state.export_base_docx = ("ok", docx_bytes)
+
+
+def _render_download_buttons(label_prefix: str, md_text: str, file_prefix: str,
+                              pdf_key: str, docx_key: str):
+    """渲染一组三列下载按钮（Markdown / PDF / Word）。
+
+    Args:
+        label_prefix: 按钮标签前缀，如 "📥 定制简历"
+        md_text: Markdown 原文
+        file_prefix: 文件名前缀，如 "resume_python_customized"
+        pdf_key: session_state key for cached PDF bytes
+        docx_key: session_state key for cached Word bytes
+    """
+    col_md, col_pdf, col_docx = st.columns(3)
+
+    with col_md:
+        st.download_button(
+            label=f"{label_prefix} (.md)",
+            data=md_text.encode("utf-8"),
+            file_name=f"{file_prefix}.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+
+    with col_pdf:
+        cached = st.session_state.get(pdf_key)
+        if cached and cached[0] == "ok":
+            st.download_button(
+                label=f"{label_prefix} (.pdf)",
+                data=cached[1],
+                file_name=f"{file_prefix}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+        elif cached and cached[0] == "error":
+            st.button(
+                label=f"{label_prefix} (.pdf) ⚠️",
+                disabled=True,
+                use_container_width=True,
+            )
+            st.caption(f"❌ {cached[1][:80]}")
+        else:
+            st.button(
+                label=f"{label_prefix} (.pdf) ⏳",
+                disabled=True,
+                use_container_width=True,
+            )
+
+    with col_docx:
+        cached = st.session_state.get(docx_key)
+        if cached and cached[0] == "ok":
+            st.download_button(
+                label=f"{label_prefix} (.docx)",
+                data=cached[1],
+                file_name=f"{file_prefix}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
+        elif cached and cached[0] == "error":
+            st.button(
+                label=f"{label_prefix} (.docx) ⚠️",
+                disabled=True,
+                use_container_width=True,
+            )
+            st.caption(f"❌ {cached[1][:80]}")
+        else:
+            st.button(
+                label=f"{label_prefix} (.docx) ⏳",
+                disabled=True,
+                use_container_width=True,
+            )
+
+
 def step_5_download():
     st.header("⑤ 下载导出")
 
-    if st.session_state.workflow_result is None:
-        st.warning("请先在 Step 4 生成简历。")
-        if st.button("← 返回生成", use_container_width=True):
+    try:
+        if st.session_state.workflow_result is None:
+            st.warning("请先在 Step 4 生成简历。")
+            if st.button("← 返回生成", use_container_width=True):
+                st.session_state.wizard_step = 4
+                st.rerun()
+            return
+
+        result = st.session_state.workflow_result
+        base = result.get("base_resume", "")
+        customized = result.get("customized_resume", "")
+        jd_reqs = result.get("jd_requirements")
+        jd_title = str(jd_reqs.title) if jd_reqs else "custom"
+        safe_title = "".join(c for c in jd_title if c.isalnum() or c in " _-")[:30]
+
+        # 确保导出缓存已生成
+        _ensure_export_cache(result)
+
+        # ── 定制简历 ──
+        st.subheader("🎯 JD 定制简历")
+        st.markdown(customized)
+        _render_download_buttons(
+            label_prefix="📥 定制简历",
+            md_text=customized,
+            file_prefix=f"resume_{safe_title}_customized",
+            pdf_key="export_customized_pdf",
+            docx_key="export_customized_docx",
+        )
+
+        st.divider()
+
+        # ── 基础简历 ──
+        st.subheader("📄 基础简历")
+        st.markdown(base)
+        _render_download_buttons(
+            label_prefix="📥 基础简历",
+            md_text=base,
+            file_prefix=f"resume_{safe_title}_base",
+            pdf_key="export_base_pdf",
+            docx_key="export_base_docx",
+        )
+
+        # 操作按钮
+        st.divider()
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🔄 重新生成", use_container_width=True):
+                _reset_workflow_state()
+                st.rerun()
+        with c2:
+            if st.button("ℹ️ 调整信息", use_container_width=True):
+                _reset_workflow_state()
+                st.session_state.wizard_step = 3
+                st.rerun()
+    except Exception:
+        logger.exception("Step 5 下载导出页面异常")
+        st.error("下载页面加载失败，请返回上一步重新生成简历。")
+        if st.button("← 返回 Step 4", use_container_width=True):
             st.session_state.wizard_step = 4
             st.rerun()
-        return
-
-    result = st.session_state.workflow_result
-    base = result.get("base_resume", "")
-    customized = result.get("customized_resume", "")
-    jd_reqs = result.get("jd_requirements")
-    jd_title = jd_reqs.title if jd_reqs else "custom"
-    safe_title = "".join(c for c in jd_title if c.isalnum() or c in " _-")[:30]
-
-    st.subheader("🎯 JD 定制简历")
-    st.markdown(customized)
-    st.download_button(
-        label="📥 下载定制简历 (.md)",
-        data=customized.encode("utf-8"),
-        file_name=f"resume_{safe_title}_customized.md",
-        mime="text/markdown",
-        use_container_width=True,
-    )
-
-    st.divider()
-
-    st.subheader("📄 基础简历")
-    st.markdown(base)
-    st.download_button(
-        label="📥 下载基础简历 (.md)",
-        data=base.encode("utf-8"),
-        file_name=f"resume_{safe_title}_base.md",
-        mime="text/markdown",
-        use_container_width=True,
-    )
 
 
 # ============================================================
