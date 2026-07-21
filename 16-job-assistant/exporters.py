@@ -5,11 +5,16 @@ AI 简历生成器 - 导出模块（Round 5）
 全部从 Markdown 字符串出发，返回值统一为 (result, error) 元组。
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import re
 from io import BytesIO
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
+
+if TYPE_CHECKING:
+    from fpdf import FPDF as FPDFType
 
 from markdown_it import MarkdownIt
 
@@ -312,7 +317,7 @@ def _check_font() -> Tuple[bool, str]:
     return False, ""
 
 
-def _embed_photo(pdf: "FPDF", photo_path: str):
+def _embed_photo(pdf: FPDFType, photo_path: str):
     """在 PDF 当前页右上角嵌入照片。
 
     照片尺寸 25×35mm（标准一寸），位置：右上角对齐页边距。
@@ -327,7 +332,7 @@ def _embed_photo(pdf: "FPDF", photo_path: str):
         logger.warning("照片嵌入失败（%s），将跳过：%s", photo_path, _sanitize_error(e), exc_info=True)
 
 
-def _add_pdf_top_bar(pdf: "FPDF", name: str, job_target: str = ""):
+def _add_pdf_top_bar(pdf: FPDFType, name: str, job_target: str = ""):
     """绘制顶部深蓝色条幅。姓名在上，求职意向在下，均靠左。"""
     bar_h = 30 if job_target else 24  # 有求职意向时顶栏稍高
     # 深蓝背景条
@@ -349,7 +354,7 @@ def _add_pdf_top_bar(pdf: "FPDF", name: str, job_target: str = ""):
     pdf.set_y(bar_h + 4)
 
 
-def _add_pdf_section_header(pdf: "FPDF", title: str):
+def _add_pdf_section_header(pdf: FPDFType, title: str):
     """绘制带左侧色条的章节标题。"""
     pdf.ln(3)
     pdf.set_fill_color(*_PDF_ACCENT)
@@ -367,7 +372,7 @@ def _add_pdf_section_header(pdf: "FPDF", title: str):
     pdf.ln(3)
 
 
-def _add_pdf_sub_header(pdf: "FPDF", title: str):
+def _add_pdf_sub_header(pdf: FPDFType, title: str):
     """绘制子标题（公司-职位），带浅蓝背景。"""
     pdf.set_fill_color(*_PDF_ACCENT_LIGHT)
     pdf.set_font("msyh", "", _PDF_FONT_SIZE_H3)
