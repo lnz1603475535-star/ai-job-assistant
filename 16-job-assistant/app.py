@@ -760,7 +760,7 @@ def render_sidebar():
             except OSError:
                 st.error("保存失败：磁盘空间不足或文件系统错误，请检查后重试。")
             except Exception as e:
-                st.error(f"保存失败：{str(e)[:150]}")
+                st.error(f"保存失败：{_sanitize_error(e)}")
 
         st.divider()
 
@@ -802,7 +802,7 @@ def render_sidebar():
                         elif "connect" in error_str or "network" in error_str:
                             st.error("无法连接到 AI 服务，请检查网络连接。")
                         else:
-                            st.error(f"提取失败：{str(e)[:150]}")
+                            st.error(f"提取失败：{_sanitize_error(e)}")
 
         # 确认追加（用 st.text 避免溢出）
         if st.session_state.ai_extract_result:
@@ -828,7 +828,7 @@ def render_sidebar():
                     except OSError:
                         st.error("写入失败：磁盘空间不足或文件系统错误，请检查后重试。")
                     except Exception as e:
-                        st.error(f"写入失败：{str(e)[:150]}")
+                        st.error(f"写入失败：{_sanitize_error(e)}")
             with c2:
                 if st.button("❌ 取消", use_container_width=True):
                     st.session_state.ai_extract_result = None
