@@ -18,6 +18,19 @@ if TYPE_CHECKING:
 
 from markdown_it import MarkdownIt
 
+try:
+    import docx as _docx
+    from docx.shared import Pt as _Pt
+    from docx.shared import Cm as _Cm
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn as _qn
+except ImportError:
+    _docx = None
+    _Pt = None
+    _Cm = None
+    WD_ALIGN_PARAGRAPH = None
+    _qn = None
+
 logger = logging.getLogger(__name__)
 
 # ============================================================
@@ -50,11 +63,6 @@ _DOCX_MARGIN = 2.54       # 页边距 cm（1 英寸）
 # ============================================================
 # Markdown 行级解析
 # ============================================================
-
-def _is_h1(line: str) -> bool:
-    """判断是否为一级标题 # xxx"""
-    return line.startswith("# ") and not line.startswith("## ")
-
 
 def _is_h2(line: str) -> bool:
     """判断是否为二级标题 ## xxx"""
@@ -266,23 +274,20 @@ def markdown_to_html(md_text: str, job_target: str = "") -> str:
 
     try:
         lines = md_text.strip().splitlines()
-        # 提取姓名（h1）和联系方式（紧跟 h1 的非空、非标题行）
-        name = ""
+        # 姓名在第一行（h1），联系方式紧跟其后（跳过空行）
+        name = _strip_inline_format(lines[0].lstrip("# ").strip())
         contact = ""
-        body_start = 0
-        for i, line in enumerate(lines):
-            stripped = line.strip()
+        body_start = 1
+        for i in range(1, len(lines)):
+            stripped = lines[i].strip()
             if not stripped:
                 continue
-            if _is_h1(stripped) and not name:
-                name = _strip_inline_format(stripped.lstrip("# ").strip())
-            elif name and not contact and not _is_h2(stripped) and not _is_h3(stripped):
-                contact = _strip_inline_format(stripped)
-                body_start = i + 1
-                break
-            elif not name:
+            if _is_h2(stripped) or _is_h3(stripped):
                 body_start = i
                 break
+            contact = _strip_inline_format(stripped)
+            body_start = i + 1
+            break
 
         # 求职意向 HTML
         if job_target:
@@ -432,14 +437,9 @@ def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
 
         lines = md_text.strip().splitlines()
 
-        # ── 第一遍：提取姓名（第一行 h1），用于顶栏 ──
-        name = ""
-        content_start = 0
-        for i, line in enumerate(lines):
-            if _is_h1(line):
-                name = _strip_inline_format(line.lstrip("# ").strip())
-                content_start = i + 1
-                break
+        # 提取姓名（第一行 h1），其余为正文
+        name = _strip_inline_format(lines[0].lstrip("# ").strip())
+        i = 1
 
         # 绘制顶栏（姓名靠左 + 求职意向靠右）
         _add_pdf_top_bar(pdf, name, job_target)
@@ -449,7 +449,6 @@ def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
             _embed_photo(pdf, photo_path)
 
         # ── 第二遍：渲染正文 ──
-        i = content_start
         while i < len(lines):
             line = lines[i]
 
@@ -533,100 +532,89 @@ _DOCX_ACCENT_LIGHT_RGB = 0xE8F0FA
 
 def _docx_add_header_bar(doc, name: str, job_target: str = ""):
     """在 Word 文档开头创建深蓝顶栏（段落背景着色）。"""
-    import docx
-    from docx.shared import Pt
-    from docx.oxml.ns import qn
 
     para = doc.add_paragraph()
-    para.paragraph_format.space_after = Pt(0)
-    para.paragraph_format.space_before = Pt(0)
+    para.paragraph_format.space_after = _Pt(0)
+    para.paragraph_format.space_before = _Pt(0)
     # 段落背景色
     pPr = para._element.get_or_add_pPr()
-    shd = docx.oxml.OxmlElement("w:shd")
-    shd.set(qn("w:fill"), "2B579A")
-    shd.set(qn("w:val"), "clear")
+    shd = _docx.oxml.OxmlElement("w:shd")
+    shd.set(_qn("w:fill"), "2B579A")
+    shd.set(_qn("w:val"), "clear")
     pPr.append(shd)
 
     # 姓名——白色大字
     run = para.add_run(name)
     run.bold = True
-    run.font.size = Pt(20)
-    run.font.color.rgb = docx.shared.RGBColor(0xFF, 0xFF, 0xFF)
+    run.font.size = _Pt(20)
+    run.font.color.rgb = _docx.shared.RGBColor(0xFF, 0xFF, 0xFF)
     run.font.name = "微软雅黑"
 
     if job_target:
         run = para.add_run(f"\n求职意向：{job_target}")
-        run.font.size = Pt(11)
-        run.font.color.rgb = docx.shared.RGBColor(0xB4, 0xC8, 0xE6)
+        run.font.size = _Pt(11)
+        run.font.color.rgb = _docx.shared.RGBColor(0xB4, 0xC8, 0xE6)
         run.font.name = "微软雅黑"
 
 
 def _docx_add_section_header(doc, title: str):
     """添加带左侧蓝色边框 + 浅蓝背景的章节标题。"""
-    import docx
-    from docx.shared import Pt
-    from docx.oxml.ns import qn
 
     para = doc.add_paragraph()
-    para.paragraph_format.space_before = Pt(14)
-    para.paragraph_format.space_after = Pt(4)
+    para.paragraph_format.space_before = _Pt(14)
+    para.paragraph_format.space_after = _Pt(4)
     # 浅蓝背景
     pPr = para._element.get_or_add_pPr()
-    shd = docx.oxml.OxmlElement("w:shd")
-    shd.set(qn("w:fill"), "E8F0FA")
-    shd.set(qn("w:val"), "clear")
+    shd = _docx.oxml.OxmlElement("w:shd")
+    shd.set(_qn("w:fill"), "E8F0FA")
+    shd.set(_qn("w:val"), "clear")
     pPr.append(shd)
     # 左侧蓝色边框
-    pBdr = docx.oxml.OxmlElement("w:pBdr")
-    left = docx.oxml.OxmlElement("w:left")
-    left.set(qn("w:val"), "single")
-    left.set(qn("w:sz"), "12")
-    left.set(qn("w:space"), "6")
-    left.set(qn("w:color"), "2B579A")
+    pBdr = _docx.oxml.OxmlElement("w:pBdr")
+    left = _docx.oxml.OxmlElement("w:left")
+    left.set(_qn("w:val"), "single")
+    left.set(_qn("w:sz"), "12")
+    left.set(_qn("w:space"), "6")
+    left.set(_qn("w:color"), "2B579A")
     pBdr.append(left)
     pPr.append(pBdr)
     # 下方细线边框
-    bottom = docx.oxml.OxmlElement("w:bottom")
-    bottom.set(qn("w:val"), "single")
-    bottom.set(qn("w:sz"), "4")
-    bottom.set(qn("w:space"), "1")
-    bottom.set(qn("w:color"), "2B579A")
+    bottom = _docx.oxml.OxmlElement("w:bottom")
+    bottom.set(_qn("w:val"), "single")
+    bottom.set(_qn("w:sz"), "4")
+    bottom.set(_qn("w:space"), "1")
+    bottom.set(_qn("w:color"), "2B579A")
     pBdr.append(bottom)
 
     run = para.add_run(title)
     run.bold = True
-    run.font.size = Pt(13)
-    run.font.color.rgb = docx.shared.RGBColor(0x2B, 0x57, 0x9A)
+    run.font.size = _Pt(13)
+    run.font.color.rgb = _docx.shared.RGBColor(0x2B, 0x57, 0x9A)
     run.font.name = "微软雅黑"
 
 
 def _docx_add_sub_header(doc, title: str):
     """添加带浅蓝背景的子标题（公司-职位）。"""
-    import docx
-    from docx.shared import Pt
-    from docx.oxml.ns import qn
 
     para = doc.add_paragraph()
-    para.paragraph_format.space_before = Pt(10)
-    para.paragraph_format.space_after = Pt(2)
+    para.paragraph_format.space_before = _Pt(10)
+    para.paragraph_format.space_after = _Pt(2)
     # 浅蓝背景
     pPr = para._element.get_or_add_pPr()
-    shd = docx.oxml.OxmlElement("w:shd")
-    shd.set(qn("w:fill"), "E8F0FA")
-    shd.set(qn("w:val"), "clear")
+    shd = _docx.oxml.OxmlElement("w:shd")
+    shd.set(_qn("w:fill"), "E8F0FA")
+    shd.set(_qn("w:val"), "clear")
     pPr.append(shd)
 
     run = para.add_run(title)
     run.bold = True
-    run.font.size = Pt(11.5)
-    run.font.color.rgb = docx.shared.RGBColor(0x2B, 0x57, 0x9A)
+    run.font.size = _Pt(11.5)
+    run.font.color.rgb = _docx.shared.RGBColor(0x2B, 0x57, 0x9A)
     run.font.name = "微软雅黑"
 
 
 def _docx_add_paragraph_with_format(doc, text: str):
     """向 Word 文档添加段落，支持行内粗体/斜体格式。"""
-    from docx.shared import Pt
-
     if text is None:
         text = ""
 
@@ -637,26 +625,26 @@ def _docx_add_paragraph_with_format(doc, text: str):
         before = text[last_end:match.start()]
         if before:
             run = para.add_run(before)
-            run.font.size = Pt(11)
+            run.font.size = _Pt(11)
             run.font.name = "微软雅黑"
         stars = match.group(1)
         formatted = match.group(2)
         run = para.add_run(formatted)
         run.bold = len(stars) >= 2
         run.italic = len(stars) in (1, 3)
-        run.font.size = Pt(11)
+        run.font.size = _Pt(11)
         run.font.name = "微软雅黑"
         last_end = match.end()
 
     tail = text[last_end:]
     if tail:
         run = para.add_run(tail)
-        run.font.size = Pt(11)
+        run.font.size = _Pt(11)
         run.font.name = "微软雅黑"
 
     if not pattern.search(text) and not text:
         run = para.add_run("")
-        run.font.size = Pt(11)
+        run.font.size = _Pt(11)
         run.font.name = "微软雅黑"
 
     return para
@@ -675,46 +663,34 @@ def markdown_to_docx_bytes(md_text: str, job_target: str = "") -> Tuple[Optional
     if not md_text or not md_text.strip():
         return None, "简历内容为空，无法生成 Word 文档。"
 
-    try:
-        import docx
-        from docx.shared import Pt, Cm
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
-    except ImportError:
+    if _docx is None:
         return None, "Word 生成失败：python-docx 库未安装，请运行 pip install python-docx。"
 
     try:
-        doc = docx.Document()
+        doc = _docx.Document()
 
         # 页面设置
         for section in doc.sections:
-            section.top_margin = Cm(0)       # 顶栏从页面顶部开始
-            section.bottom_margin = Cm(_DOCX_MARGIN)
-            section.left_margin = Cm(_DOCX_MARGIN)
-            section.right_margin = Cm(_DOCX_MARGIN)
+            section.top_margin = _Cm(0)       # 顶栏从页面顶部开始
+            section.bottom_margin = _Cm(_DOCX_MARGIN)
+            section.left_margin = _Cm(_DOCX_MARGIN)
+            section.right_margin = _Cm(_DOCX_MARGIN)
 
         # 设置默认字体
         style = doc.styles["Normal"]
-        style.font.size = Pt(11)
+        style.font.size = _Pt(11)
         style.font.name = "微软雅黑"
-        style.paragraph_format.space_after = Pt(4)
+        style.paragraph_format.space_after = _Pt(4)
         style.paragraph_format.line_spacing = 1.5
 
         lines = md_text.strip().splitlines()
 
-        # ── 第一遍：提取姓名 ──
-        name = ""
-        content_start = 0
-        for i, line in enumerate(lines):
-            if _is_h1(line):
-                name = _strip_inline_format(line.lstrip("# ").strip())
-                content_start = i + 1
-                break
-
-        # ── 顶栏 ──
+        # 提取姓名（第一行 h1），其余为正文
+        name = _strip_inline_format(lines[0].lstrip("# ").strip())
         _docx_add_header_bar(doc, name, job_target)
 
-        # ── 第二遍：渲染正文 ──
-        i = content_start
+        # ── 渲染正文 ──
+        i = 1
         while i < len(lines):
             line = lines[i]
 
@@ -725,16 +701,11 @@ def markdown_to_docx_bytes(md_text: str, job_target: str = "") -> Tuple[Optional
 
             if _is_horizontal_rule(line):
                 hr_para = doc.add_paragraph()
-                hr_para.paragraph_format.space_before = Pt(6)
-                hr_para.paragraph_format.space_after = Pt(6)
+                hr_para.paragraph_format.space_before = _Pt(6)
+                hr_para.paragraph_format.space_after = _Pt(6)
                 run = hr_para.add_run("─" * 60)
-                run.font.size = Pt(8)
-                run.font.color.rgb = docx.shared.RGBColor(0xCC, 0xCC, 0xCC)
-                i += 1
-                continue
-
-            # 跳过 h1（已在顶栏处理）
-            if _is_h1(line):
+                run.font.size = _Pt(8)
+                run.font.color.rgb = _docx.shared.RGBColor(0xCC, 0xCC, 0xCC)
                 i += 1
                 continue
 
@@ -754,10 +725,10 @@ def markdown_to_docx_bytes(md_text: str, job_target: str = "") -> Tuple[Optional
                 indent = _count_leading_spaces(line)
                 content = _strip_list_item_content(line)
                 para = doc.add_paragraph(style="List Bullet")
-                para.paragraph_format.left_indent = Cm(1.27 + indent * 0.32)
+                para.paragraph_format.left_indent = _Cm(1.27 + indent * 0.32)
                 para.clear()
                 run = para.add_run(content)
-                run.font.size = Pt(11)
+                run.font.size = _Pt(11)
                 run.font.name = "微软雅黑"
                 i += 1
                 continue
@@ -766,11 +737,11 @@ def markdown_to_docx_bytes(md_text: str, job_target: str = "") -> Tuple[Optional
             para = doc.add_paragraph()
             content = _strip_inline_format(line.strip())
             run = para.add_run(content)
-            run.font.size = Pt(11)
+            run.font.size = _Pt(11)
             run.font.name = "微软雅黑"
             # 联系方式用灰色
             if "@" in content or "|" in content or "电话" in content:
-                run.font.color.rgb = docx.shared.RGBColor(0x66, 0x66, 0x66)
+                run.font.color.rgb = _docx.shared.RGBColor(0x66, 0x66, 0x66)
                 para.alignment = WD_ALIGN_PARAGRAPH.LEFT
             i += 1
 
