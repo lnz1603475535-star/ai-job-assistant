@@ -24,7 +24,7 @@ from core import (
 from workflow import run_workflow, resume_workflow
 from prompts import EXPERIENCE_EXTRACTION_PROMPT
 from models import validate_experience_markdown
-from exporters import markdown_to_pdf_bytes, markdown_to_docx_bytes
+from exporters import markdown_to_pdf_bytes, markdown_to_docx_bytes, _sanitize_error
 
 # ============================================================
 # 常量
@@ -127,15 +127,6 @@ def save_uploaded_file(uploaded_file, prefix: str = "upload") -> tuple[str, str 
         return "", "文件保存失败，请检查磁盘空间或临时目录权限后重试。"
 
     return path, None
-
-
-def _sanitize_error(exc: Exception) -> str:
-    """脱敏异常信息：替换用户目录路径，截断到 200 字符。"""
-    msg = str(exc)
-    home = os.path.expanduser("~")
-    if home and home != "~":
-        msg = msg.replace(home, "~")
-    return msg[:200]
 
 
 def _render_file_preview(state_key: str, label_prefix: str):

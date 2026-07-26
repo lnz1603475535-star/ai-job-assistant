@@ -153,16 +153,9 @@ def test_workflow():
     print("[5/5] 导出验证（PDF + Word + HTML）...")
     print("─" * 60)
 
-    from exporters import markdown_to_pdf_bytes, markdown_to_docx_bytes, markdown_to_html
+    from exporters import markdown_to_pdf_bytes, markdown_to_docx_bytes
 
     export_checks = []
-
-    # HTML
-    try:
-        html = markdown_to_html(customized)
-        export_checks.append(("HTML 导出", len(html) > 500, None))
-    except ValueError as e:
-        export_checks.append(("HTML 导出", False, str(e)))
 
     # PDF
     pdf_bytes, pdf_err = markdown_to_pdf_bytes(customized)

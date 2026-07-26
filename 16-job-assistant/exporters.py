@@ -16,8 +16,6 @@ from typing import TYPE_CHECKING, Optional, Tuple
 if TYPE_CHECKING:
     from fpdf import FPDF as FPDFType
 
-from markdown_it import MarkdownIt
-
 try:
     import docx as _docx
     from docx.shared import Pt as _Pt
@@ -125,186 +123,6 @@ def _strip_list_item_content(line: str) -> str:
         return _strip_inline_format(stripped[2:].strip())
     # 兜底：不是标准列表标记，返回原文
     return _strip_inline_format(stripped)
-
-
-# ============================================================
-# HTML 导出
-# ============================================================
-
-_HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>简历</title>
-<style>
-  :root {{
-    --accent: #2b579a;
-    --accent-light: #e8f0fa;
-    --text: #333;
-    --text-light: #666;
-    --border: #e0e0e0;
-  }}
-  @page {{ size: A4; margin: 0; }}
-  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-
-  body {{
-    font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", sans-serif;
-    font-size: 11pt;
-    line-height: 1.8;
-    color: var(--text);
-    max-width: 210mm;
-    margin: 0 auto;
-  }}
-
-  /* ── 顶栏 ── */
-  .header-bar {{
-    background: var(--accent);
-    color: #fff;
-    padding: 18px 40px 12px;
-  }}
-  .header-bar .name {{
-    font-size: 20pt;
-    font-weight: 700;
-    letter-spacing: 2px;
-  }}
-  .header-bar .job-target {{
-    font-size: 11pt;
-    color: rgba(255,255,255,0.85);
-    margin-top: 2px;
-  }}
-
-  /* ── 联系方式 ── */
-  .contact-row {{
-    color: var(--text-light);
-    font-size: 10pt;
-    padding: 10px 40px;
-    border-bottom: 1px solid var(--border);
-  }}
-
-  /* ── 正文区 ── */
-  .content {{ padding: 10px 40px 30px; }}
-
-  /* ── 章节标题 ── */
-  .content h2 {{
-    font-size: 13pt;
-    color: var(--accent);
-    border-left: 4px solid var(--accent);
-    padding: 4px 0 4px 10px;
-    margin: 22px 0 10px;
-    background: var(--accent-light);
-  }}
-
-  /* ── 子标题 ── */
-  .content h3 {{
-    font-size: 11.5pt;
-    font-weight: 600;
-    margin: 14px 0 4px;
-    padding: 3px 8px;
-    background: var(--accent-light);
-    display: inline-block;
-  }}
-
-  /* ── 列表 ── */
-  .content ul {{
-    padding-left: 20px;
-    margin: 6px 0;
-    list-style: none;
-  }}
-  .content ul li {{
-    position: relative;
-    padding-left: 14px;
-    margin-bottom: 3px;
-  }}
-  .content ul li::before {{
-    content: "•";
-    position: absolute;
-    left: 0;
-    color: var(--accent);
-    font-weight: bold;
-  }}
-
-  /* ── 段落 ── */
-  .content p {{ margin: 4px 0; }}
-
-  /* ── 分割线 ── */
-  .content hr {{
-    border: none;
-    border-top: 1px solid var(--border);
-    margin: 14px 0;
-  }}
-
-  /* ── 打印 ── */
-  @media print {{
-    body {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
-  }}
-</style>
-</head>
-<body>
-<div class="header-bar">
-  <div class="name">{name}</div>
-  {job_target_html}
-</div>
-<div class="contact-row">{contact}</div>
-<div class="content">
-{body}
-</div>
-</body>
-</html>"""
-
-
-def markdown_to_html(md_text: str, job_target: str = "") -> str:
-    """将 Markdown 简历文本转换为完整 HTML 页面。
-
-    自动提取第一行作为姓名、第二行作为联系方式放入顶栏，
-    其余内容在带样式的正文区渲染。
-
-    Args:
-        md_text: Markdown 格式的简历文本。
-        job_target: 可选，求职意向（如"Python 后端工程师"），显示在顶栏右侧。
-
-    Returns:
-        完整的 HTML 字符串（含内嵌 CSS），可直接在浏览器打开或打印为 PDF。
-
-    Raises:
-        ValueError: 输入为空或无效。
-    """
-    if not md_text or not md_text.strip():
-        raise ValueError("简历内容为空，无法生成 HTML。")
-
-    try:
-        lines = md_text.strip().splitlines()
-        # 姓名在第一行（h1），联系方式紧跟其后（跳过空行）
-        name = _strip_inline_format(lines[0].lstrip("# ").strip())
-        contact = ""
-        body_start = 1
-        for i in range(1, len(lines)):
-            stripped = lines[i].strip()
-            if not stripped:
-                continue
-            if _is_h2(stripped) or _is_h3(stripped):
-                body_start = i
-                break
-            contact = _strip_inline_format(stripped)
-            body_start = i + 1
-            break
-
-        # 求职意向 HTML
-        if job_target:
-            job_target_html = f'<div class="job-target">求职意向：{job_target}</div>'
-        else:
-            job_target_html = ""
-
-        # 渲染正文（跳过已提取的顶栏内容）
-        body_md = "\n".join(lines[body_start:]).strip()
-        md = MarkdownIt()
-        body_html = md.render(body_md)
-        return _HTML_TEMPLATE.format(
-            name=name, contact=contact, body=body_html, job_target_html=job_target_html
-        )
-    except Exception:
-        logger.exception("Markdown → HTML 转换失败")
-        raise ValueError("HTML 生成失败，请检查简历内容格式。") from None
 
 
 # ============================================================
@@ -801,16 +619,8 @@ if __name__ == "__main__":
     print("  导出模块冒烟测试")
     print("=" * 60)
 
-    # HTML
-    print("\n[1/3] 测试 HTML 导出...")
-    try:
-        html = markdown_to_html(SAMPLE_MD)
-        print(f"  ✅ HTML 生成成功 ({len(html)} 字符)")
-    except ValueError as e:
-        print(f"  ❌ HTML 失败: {e}")
-
     # PDF
-    print("\n[2/3] 测试 PDF 导出...")
+    print("\n[1/2] 测试 PDF 导出...")
     pdf_bytes, pdf_err = markdown_to_pdf_bytes(SAMPLE_MD)
     if pdf_err:
         print(f"  ❌ PDF 失败: {pdf_err}")
@@ -823,7 +633,7 @@ if __name__ == "__main__":
         print(f"  ✅ PDF 生成成功 ({len(pdf_bytes)} bytes) → {out_path}")
 
     # Word
-    print("\n[3/3] 测试 Word 导出...")
+    print("\n[2/2] 测试 Word 导出...")
     docx_bytes, docx_err = markdown_to_docx_bytes(SAMPLE_MD)
     if docx_err:
         print(f"  ❌ Word 失败: {docx_err}")
