@@ -338,14 +338,20 @@ def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple[object, 
 # ============================================================
 
 @tool
-def search_documents(query: str, k: int = 4) -> str:
+def search_documents(query: str, k: int = 4, doc_types: list[str] | None = None) -> str:
     """混合搜索文档数据库（FAISS 语义检索 + BM25 关键词匹配）。
     用于查找用户经历、JD 要求、样本风格等已索引的文档内容。
 
     参数：
         query：中文或英文的自然语言搜索词
         k：返回结果数量，默认 4
+        doc_types：只返回指定文档类型（如 ["user_experience"]），None 返回全部类型
     """
+    return _search_documents_impl(query, k, doc_types)
+
+
+def _search_documents_impl(query: str, k: int = 4, doc_types: list[str] | None = None) -> str:
+    """search_documents 的核心实现——普通函数，供工具包装和工作流直接调用。"""
     if _vectorstore is None:
         return "尚未加载任何文档。"
     if _bm25_index is None:
@@ -387,11 +393,15 @@ def search_documents(query: str, k: int = 4) -> str:
         score = 1.0 / (K + rank)
         rrf_scores[idx] = rrf_scores.get(idx, 0.0) + score
 
-    # 按 RRF 得分降序排列，取 top-k
-    sorted_indices = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+    # 按 RRF 得分降序排列，取 top-k（doc_types 过滤后再截断，不足 k 就返回少一些）
+    sorted_indices = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+    filtered_indices = [
+        (idx, score) for idx, score in sorted_indices
+        if doc_types is None or _chunks_metadata[idx].get("doc_type") in doc_types
+    ][:k]
 
     merged = []
-    for idx, score in sorted_indices:
+    for idx, score in filtered_indices:
         content = _chunks_text[idx]
         doc_type = _chunks_metadata[idx].get("doc_type", "unknown")
         merged.append(f"[{doc_type}] {content}")

@@ -5,9 +5,12 @@ AI 简历生成器 — LangGraph 工作流
 支持 MemorySaver 断点恢复。
 """
 
+import logging
 import operator
 import os
 from typing import Annotated, TypedDict
+
+logger = logging.getLogger(__name__)
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.state import CompiledStateGraph
@@ -23,6 +26,7 @@ from resume_engine import (
     get_last_token_usage,
     is_customize_failed,
 )
+from core import _search_documents_impl
 
 
 # MemorySaver 单例——断点恢复依赖同一实例跨请求保持状态
@@ -38,6 +42,12 @@ def get_checkpointer() -> MemorySaver:
     if _checkpointer is None:
         _checkpointer = MemorySaver()
     return _checkpointer
+
+
+# 经验库全文超过该字符数时启用按需检索（小于阈值直接喂全文，检索纯属多余）
+_EXPERIENCE_FULL_TEXT_THRESHOLD = 5000
+# 按需检索的候选块数（约 500 字符/块 ≈ 5000 字符输入，token 恒定不随库增长）
+_EXPERIENCE_RETRIEVE_K = 10
 
 
 # ============================================================
@@ -90,14 +100,54 @@ def node_extract_style(state: WorkflowState) -> dict[str, object]:
     return {"style_profile": result}
 
 
+def _retrieve_experience_for_jd(jd: JDRequirements) -> str:
+    """按 JD 关键词从经验库检索相关经历段落（复用 search_documents 的 RRF 融合检索）。
+
+    只检索 user_experience 类型，避免串入样本简历/JD 内容。
+    返回空字符串表示检索不可用或无结果——调用方回退全文。
+    """
+    if not jd or not jd.keywords:
+        return ""
+    query = " ".join(jd.keywords[:10]).strip()
+    if not query:
+        return ""
+    try:
+        result = _search_documents_impl(
+            query, k=_EXPERIENCE_RETRIEVE_K, doc_types=["user_experience"]
+        )
+    except Exception:
+        logger.exception("按需检索经验库失败，回退全文")
+        return ""
+    # 正常结果以 [doc_type] 开头（代码保证的格式）；哨兵文案（"未找到相关文档。"、
+    # "尚未加载任何文档。"、"关键词索引不可用" 等）都不以 [ 开头——
+    # 按格式判断而非枚举文案，未来新增哨兵也不会漏
+    if not result or not result.startswith("["):
+        return ""
+    return result
+
+
 def node_parse_user(state: WorkflowState) -> dict[str, object]:
-    """节点 3：解析用户信息。"""
-    result = parse_user_info(state["user_text"])
+    """节点 4：解析用户信息。经验库较大时按 JD 关键词按需检索，只提取相关经历。"""
+    user_text = state.get("user_text", "")
+    jd = state.get("jd_requirements")
+
+    context = user_text
+    # 经验库超过阈值 → 按需检索（token 恒定 + 提取更精准）；否则直接用全文
+    if jd and len(user_text) > _EXPERIENCE_FULL_TEXT_THRESHOLD:
+        retrieved = _retrieve_experience_for_jd(jd)
+        if retrieved:
+            context = retrieved
+            logger.info(
+                "按需检索：经验库 %d 字符 → 检索上下文 %d 字符",
+                len(user_text), len(retrieved),
+            )
+
+    result = parse_user_info(context)
     return {"user_profile": result}
 
 
 def node_extract_jd(state: WorkflowState) -> dict[str, object]:
-    """节点 4：提取 JD 要求。"""
+    """节点 3：提取 JD 要求。"""
     result = extract_jd_requirements(state["jd_path"])
     return {"jd_requirements": result}
 
@@ -142,8 +192,17 @@ def node_check_parsed(state: WorkflowState) -> dict[str, object]:
 
 def node_customize(state: WorkflowState) -> dict[str, object]:
     """节点 7：JD 定制优化。"""
+    # 短路保护：基础简历为空时不调用 LLM（省一次无效调用），直接标记跳过
+    base_resume = state.get("base_resume", "")
+    if not base_resume.strip():
+        logger.warning("基础简历为空，跳过 JD 定制")
+        return {
+            "customized_resume": "",
+            "token_usage": {},
+            "notifications": ["⚠️ 基础简历为空，已跳过 JD 定制。请检查输入信息后重新生成。"],
+        }
     result = customize_for_jd(
-        state["base_resume"],
+        base_resume,
         state["jd_requirements"],
         notifications=state.get("notifications"),
         user_supplement=state.get("user_supplement", ""),
@@ -201,9 +260,10 @@ def build_workflow() -> CompiledStateGraph:
         "extract_style": "extract_style",
         END: END,
     })
-    graph.add_edge("extract_style", "parse_user")
-    graph.add_edge("parse_user", "extract_jd")
-    graph.add_edge("extract_jd", "generate_base")
+    # extract_jd 在 parse_user 之前：parse_user 需要 JD 关键词做按需检索
+    graph.add_edge("extract_style", "extract_jd")
+    graph.add_edge("extract_jd", "parse_user")
+    graph.add_edge("parse_user", "generate_base")
     graph.add_edge("generate_base", "check_parsed")
     graph.add_edge("check_parsed", "customize")
     graph.add_edge("customize", END)
