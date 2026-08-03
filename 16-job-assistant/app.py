@@ -79,7 +79,7 @@ def initialize_session_state():
         "jd_path": None,
         "jd_name": None,
         "docs_indexed": False,
-        "user_text": "",
+        "user_supplement_input": "",  # Step 3 补充指引（与 workflow 的 user_text=经验库 语义区分）
         "workflow_result": None,
         "workflow_paused": False,       # True 表示工作流停在 check_parsed 断点，等待审核
         "paused_result": None,          # 断点暂停时的中间 state（含 base_resume + notifications）
@@ -456,12 +456,12 @@ def step_3_user_info():
 
     supplement = st.text_area(
         "补充指引",
-        value=st.session_state.user_text,
+        value=st.session_state.user_supplement_input,
         height=150,
         placeholder="例如：突出高并发优化经验，弱化前端部分；希望简历体现团队管理能力；这个岗位偏架构方向，侧重系统设计经历",
-        key="user_text_input",
+        key="user_supplement_input",
     )
-    st.session_state.user_text = supplement
+    st.session_state.user_supplement_input = supplement
 
     st.divider()
 
@@ -655,9 +655,9 @@ def step_4_generate_preview():
     with c2:
         st.write(f"📋 **目标 JD**：{st.session_state.jd_name}")
 
-    if st.session_state.user_text.strip():
+    if st.session_state.user_supplement_input.strip():
         with st.expander("📝 补充信息（点击展开）"):
-            st.text(st.session_state.user_text[:800] + ("..." if len(st.session_state.user_text) > 800 else ""))
+            st.text(st.session_state.user_supplement_input[:800] + ("..." if len(st.session_state.user_supplement_input) > 800 else ""))
 
     if st.button("🚀 开始生成简历", type="primary", disabled=st.session_state.processing):
         st.session_state.processing = True
@@ -681,7 +681,7 @@ def step_4_generate_preview():
                     sample_resume_path=st.session_state.resume_path,
                     jd_path=st.session_state.jd_path,
                     thread_id=st.session_state.session_id,
-                    user_supplement=st.session_state.user_text,
+                    user_supplement=st.session_state.user_supplement_input,
                 )
 
                 errors = result.get("errors", [])
@@ -858,27 +858,33 @@ def step_5_download():
 
         # ── 定制简历 ──
         st.subheader("🎯 JD 定制简历")
-        st.markdown(customized)
-        _render_download_buttons(
-            label_prefix="📥 定制简历",
-            md_text=customized,
-            file_prefix=f"resume_{safe_title}_customized",
-            pdf_key="export_customized_pdf",
-            docx_key="export_customized_docx",
-        )
+        if not customized.strip():
+            st.warning("JD 定制被跳过（基础简历为空），请点击「重新生成」检查输入信息。")
+        else:
+            st.markdown(customized)
+            _render_download_buttons(
+                label_prefix="📥 定制简历",
+                md_text=customized,
+                file_prefix=f"resume_{safe_title}_customized",
+                pdf_key="export_customized_pdf",
+                docx_key="export_customized_docx",
+            )
 
         st.divider()
 
         # ── 基础简历 ──
         st.subheader("📄 基础简历")
-        st.markdown(base)
-        _render_download_buttons(
-            label_prefix="📥 基础简历",
-            md_text=base,
-            file_prefix=f"resume_{safe_title}_base",
-            pdf_key="export_base_pdf",
-            docx_key="export_base_docx",
-        )
+        if not base.strip():
+            st.warning("基础简历为空，请点击「重新生成」检查输入信息。")
+        else:
+            st.markdown(base)
+            _render_download_buttons(
+                label_prefix="📥 基础简历",
+                md_text=base,
+                file_prefix=f"resume_{safe_title}_base",
+                pdf_key="export_base_pdf",
+                docx_key="export_base_docx",
+            )
 
         # 操作按钮
         st.divider()

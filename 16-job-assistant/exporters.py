@@ -1,7 +1,7 @@
 """
 AI 简历生成器 - 导出模块（Round 5）
 ===================================
-提供三种格式导出：PDF（fpdf2）、Word（python-docx）、HTML（markdown-it-py）。
+提供两种格式导出：PDF（fpdf2）、Word（python-docx）。
 全部从 Markdown 字符串出发，返回值统一为 (result, error) 元组。
 """
 
@@ -57,6 +57,10 @@ _PDF_TEXT_MEDIUM = (100, 100, 100)  # 次要文字
 # Word 页面设置
 _DOCX_MARGIN = 2.54       # 页边距 cm（1 英寸）
 
+# 照片尺寸（mm，标准一寸照比例）
+_PHOTO_W = 25
+_PHOTO_H = 35
+
 
 # ============================================================
 # Markdown 行级解析
@@ -86,10 +90,10 @@ def _is_horizontal_rule(line: str) -> bool:
 
 def _strip_inline_format(text: str) -> str:
     """去除行内 Markdown 格式（粗体/斜体/代码/链接），返回纯文本。"""
+    # 图片 ![alt](url) → alt（先处理：否则 ![alt](url) 会被链接正则剥成 !alt）
+    text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
     # 链接 [text](url) → text
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
-    # 图片 ![alt](url) → alt
-    text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
     # 行内代码 `code`
     text = re.sub(r"`([^`]*)`", r"\1", text)
     # 粗斜体 ***text***
@@ -106,11 +110,28 @@ def _count_leading_spaces(line: str) -> int:
     return len(line) - len(line.lstrip())
 
 
-def _strip_list_item_content(line: str) -> str:
+def _extract_resume_name(lines: list[str]) -> tuple[str, int]:
+    """从 Markdown 行中提取姓名（第一个 # 一级标题行）。
+
+    LLM 输出不保证第一行一定是 `# 姓名`，逐行查找第一个一级标题。
+    返回 (姓名, 该行索引)；找不到返回 ("", 0)——调用方按无姓名处理，
+    顶栏只显示求职意向（如有），正文从第一行开始。
+    """
+    for i, line in enumerate(lines):
+        if line.startswith("# "):
+            return _strip_inline_format(line[2:].strip()), i
+    return "", 0
+
+
+def _strip_list_item_content(line: str, strip_inline: bool = True) -> str:
     """从列表项行中提取内容文本，正确去除列表标记（- 或 * ）。
 
     与 lstrip("-* ") 不同，此函数只去除行首空格和第一个列表标记，
     不会误删内容中以 * 或 - 开头的字符。
+
+    Args:
+        strip_inline: True 时同时去除行内格式（**粗体** 等，PDF 用）；
+            False 时保留行内格式标记（Word 用，后续按标记渲染粗体/斜体）。
 
     Example:
         "  - **Python** 是主力语言" → "**Python** 是主力语言"
@@ -118,11 +139,13 @@ def _strip_list_item_content(line: str) -> str:
     """
     stripped = line.lstrip()
     if stripped.startswith("- "):
-        return _strip_inline_format(stripped[2:].strip())
-    if stripped.startswith("* "):
-        return _strip_inline_format(stripped[2:].strip())
-    # 兜底：不是标准列表标记，返回原文
-    return _strip_inline_format(stripped)
+        content = stripped[2:].strip()
+    elif stripped.startswith("* "):
+        content = stripped[2:].strip()
+    else:
+        # 兜底：不是标准列表标记，返回原文
+        content = stripped
+    return _strip_inline_format(content) if strip_inline else content
 
 
 # ============================================================
@@ -146,11 +169,10 @@ def _embed_photo(pdf: FPDFType, photo_path: str):
     照片尺寸 25×35mm（标准一寸），位置：右上角对齐页边距。
     嵌入后光标保持在页面顶部，不影响后续文字排版。
     """
-    photo_w, photo_h = 25, 35  # mm，标准一寸照比例
-    x = pdf.w - _PDF_MARGIN_LR - photo_w
+    x = pdf.w - _PDF_MARGIN_LR - _PHOTO_W
     y = _PDF_MARGIN_T
     try:
-        pdf.image(photo_path, x=x, y=y, w=photo_w, h=photo_h)
+        pdf.image(photo_path, x=x, y=y, w=_PHOTO_W, h=_PHOTO_H)
     except (OSError, RuntimeError) as e:
         logger.warning("照片嵌入失败（%s），将跳过：%s", photo_path, _sanitize_error(e), exc_info=True)
 
@@ -255,9 +277,9 @@ def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
 
         lines = md_text.strip().splitlines()
 
-        # 提取姓名（第一行 h1），其余为正文
-        name = _strip_inline_format(lines[0].lstrip("# ").strip())
-        i = 1
+        # 提取姓名（第一个 # 一级标题行），其余为正文
+        name, name_idx = _extract_resume_name(lines)
+        i = name_idx + 1 if name else 0
 
         # 绘制顶栏（姓名靠左 + 求职意向靠右）
         _add_pdf_top_bar(pdf, name, job_target)
@@ -265,6 +287,9 @@ def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
         # 嵌入照片（首页右上角，顶栏上方）
         if photo_path:
             _embed_photo(pdf, photo_path)
+            # 照片占满右上角 _PHOTO_H 高，正文下移到照片底部以下，
+            # 避免正文（尤其联系方式行）画在照片上
+            pdf.set_y(max(pdf.get_y(), _PDF_MARGIN_T + _PHOTO_H + 2))
 
         # ── 第二遍：渲染正文 ──
         while i < len(lines):
@@ -431,12 +456,25 @@ def _docx_add_sub_header(doc, title: str):
     run.font.name = "微软雅黑"
 
 
-def _docx_add_paragraph_with_format(doc, text: str):
-    """向 Word 文档添加段落，支持行内粗体/斜体格式。"""
+def _docx_add_paragraph_with_format(doc, text: str, style: str | None = None,
+                                    left_indent_cm: float | None = None):
+    """向 Word 文档添加段落，支持行内粗体/斜体格式。
+
+    Args:
+        text: 段落文本（保留 **粗体** / *斜体* 标记，函数内解析）
+        style: 可选段落样式名（如 "List Bullet"）
+        left_indent_cm: 可选左缩进（cm），用于嵌套列表
+    """
     if text is None:
         text = ""
 
     para = doc.add_paragraph()
+    if style:
+        para.style = doc.styles[style]
+        para.clear()  # 清除样式模板自带的空 run
+    if left_indent_cm is not None:
+        para.paragraph_format.left_indent = _Cm(left_indent_cm)
+
     pattern = re.compile(r"(\*{1,3})(.+?)\1")
     last_end = 0
     for match in pattern.finditer(text):
@@ -457,11 +495,6 @@ def _docx_add_paragraph_with_format(doc, text: str):
     tail = text[last_end:]
     if tail:
         run = para.add_run(tail)
-        run.font.size = _Pt(11)
-        run.font.name = "微软雅黑"
-
-    if not pattern.search(text) and not text:
-        run = para.add_run("")
         run.font.size = _Pt(11)
         run.font.name = "微软雅黑"
 
@@ -503,12 +536,12 @@ def markdown_to_docx_bytes(md_text: str, job_target: str = "") -> Tuple[Optional
 
         lines = md_text.strip().splitlines()
 
-        # 提取姓名（第一行 h1），其余为正文
-        name = _strip_inline_format(lines[0].lstrip("# ").strip())
+        # 提取姓名（第一个 # 一级标题行），其余为正文
+        name, name_idx = _extract_resume_name(lines)
         _docx_add_header_bar(doc, name, job_target)
 
         # ── 渲染正文 ──
-        i = 1
+        i = name_idx + 1 if name else 0
         while i < len(lines):
             line = lines[i]
 
@@ -541,25 +574,22 @@ def markdown_to_docx_bytes(md_text: str, job_target: str = "") -> Tuple[Optional
 
             if _is_list_item(line):
                 indent = _count_leading_spaces(line)
-                content = _strip_list_item_content(line)
-                para = doc.add_paragraph(style="List Bullet")
-                para.paragraph_format.left_indent = _Cm(1.27 + indent * 0.32)
-                para.clear()
-                run = para.add_run(content)
-                run.font.size = _Pt(11)
-                run.font.name = "微软雅黑"
+                content = _strip_list_item_content(line, strip_inline=False)
+                _docx_add_paragraph_with_format(
+                    doc, content,
+                    style="List Bullet",
+                    left_indent_cm=1.27 + indent * 0.32,
+                )
                 i += 1
                 continue
 
             # 普通段落（联系方式等）
-            para = doc.add_paragraph()
-            content = _strip_inline_format(line.strip())
-            run = para.add_run(content)
-            run.font.size = _Pt(11)
-            run.font.name = "微软雅黑"
+            content = line.strip()
+            para = _docx_add_paragraph_with_format(doc, content)
             # 联系方式用灰色
             if "@" in content or "|" in content or "电话" in content:
-                run.font.color.rgb = _docx.shared.RGBColor(0x66, 0x66, 0x66)
+                for run in para.runs:
+                    run.font.color.rgb = _docx.shared.RGBColor(0x66, 0x66, 0x66)
                 para.alignment = WD_ALIGN_PARAGRAPH.LEFT
             i += 1
 

@@ -1,5 +1,7 @@
 # 运行时日志（RotatingFileHandler 会产生 app.log 及轮转文件 app.log.1/2/3）
 data/app.log*
+# 测试产物（exporters.py 冒烟测试 / terminal_test.py 导出验证）
+data/_test_*
 __pycache__/
 *.pyc
 *.pyo
