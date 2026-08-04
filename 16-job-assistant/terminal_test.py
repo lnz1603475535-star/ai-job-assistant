@@ -157,13 +157,14 @@ def test_workflow():
 
     export_checks = []
 
-    # PDF
+    # PDF（bytes 类型必须校验：fpdf2 output() 返回 bytearray，
+    # Streamlit download_button 不接受 bytearray——曾导致 Step 5 下载页崩溃）
     pdf_bytes, pdf_err = markdown_to_pdf_bytes(customized)
-    export_checks.append(("PDF 导出", pdf_err is None and pdf_bytes is not None and len(pdf_bytes) > 1000, pdf_err))
+    export_checks.append(("PDF 导出", pdf_err is None and isinstance(pdf_bytes, bytes) and len(pdf_bytes) > 1000, pdf_err))
 
     # Word
     docx_bytes, docx_err = markdown_to_docx_bytes(customized)
-    export_checks.append(("Word 导出", docx_err is None and docx_bytes is not None and len(docx_bytes) > 1000, docx_err))
+    export_checks.append(("Word 导出", docx_err is None and isinstance(docx_bytes, bytes) and len(docx_bytes) > 1000, docx_err))
 
     for desc, okay, err_msg in export_checks:
         status = "PASS" if okay else "FAIL"

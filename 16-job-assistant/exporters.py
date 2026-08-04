@@ -243,6 +243,8 @@ def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
 
     Returns:
         (pdf_bytes, None) 成功时； (None, error_message) 失败时。
+        pdf_bytes 保证是 bytes（fpdf2 的 output() 返回 bytearray，
+        Streamlit download_button 不接受 bytearray，这里统一转 bytes）。
     """
     if not md_text or not md_text.strip():
         return None, "简历内容为空，无法生成 PDF。"
@@ -356,7 +358,7 @@ def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
                               new_x="LMARGIN", new_y="NEXT", align="L")
             i += 1
 
-        pdf_bytes = pdf.output()
+        pdf_bytes = bytes(pdf.output())
         return pdf_bytes, None
 
     except Exception as e:
