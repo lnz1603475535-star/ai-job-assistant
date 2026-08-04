@@ -842,10 +842,8 @@ def step_5_download():
 
     try:
         if st.session_state.workflow_result is None:
-            st.warning("请先在 Step 4 生成简历。")
-            if st.button("← 返回生成", use_container_width=True):
-                st.session_state.wizard_step = 4
-                st.rerun()
+            # 返回 Step 4 用底部「上一步」即可（wizard_step 5→4），不重复放按钮
+            st.warning("请先在 Step 4 生成简历，再点击底部「上一步」返回。")
             return
 
         result = st.session_state.workflow_result
@@ -902,10 +900,7 @@ def step_5_download():
                 st.rerun()
     except Exception:
         logger.exception("Step 5 下载导出页面异常")
-        st.error("下载页面加载失败，请返回上一步重新生成简历。")
-        if st.button("← 返回 Step 4", use_container_width=True):
-            st.session_state.wizard_step = 4
-            st.rerun()
+        st.error("下载页面加载失败，请点击底部「上一步」返回重新生成。")
 
 
 # ============================================================
