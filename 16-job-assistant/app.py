@@ -742,7 +742,7 @@ def _ensure_export_cache(result: dict):
             st.session_state.export_customized_pdf = ("ok", pdf_bytes)
 
     if st.session_state.export_customized_docx is None and customized:
-        docx_bytes, docx_err = markdown_to_docx_bytes(customized, job_target=job_target)
+        docx_bytes, docx_err = markdown_to_docx_bytes(customized, job_target=job_target, photo_path=photo)
         if docx_err:
             logger.error("定制简历 Word 导出失败：%s", docx_err)
             st.session_state.export_customized_docx = ("error", docx_err)
@@ -758,7 +758,7 @@ def _ensure_export_cache(result: dict):
             st.session_state.export_base_pdf = ("ok", pdf_bytes)
 
     if st.session_state.export_base_docx is None and base:
-        docx_bytes, docx_err = markdown_to_docx_bytes(base, job_target=job_target)
+        docx_bytes, docx_err = markdown_to_docx_bytes(base, job_target=job_target, photo_path=photo)
         if docx_err:
             logger.error("基础简历 Word 导出失败：%s", docx_err)
             st.session_state.export_base_docx = ("error", docx_err)

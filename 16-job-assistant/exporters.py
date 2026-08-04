@@ -249,6 +249,10 @@ def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
     if not md_text or not md_text.strip():
         return None, "简历内容为空，无法生成 PDF。"
 
+    # 正文若已含求职意向（LLM 生成时可能已写入），顶栏不再重复添加
+    if re.search(r"求职意向", md_text):
+        job_target = ""
+
     # 检查字体
     font_ok, font_path = _check_font()
     if not font_ok:
@@ -402,6 +406,24 @@ def _docx_add_header_bar(doc, name: str, job_target: str = ""):
         run.font.name = "微软雅黑"
 
 
+def _docx_add_photo(doc, photo_path: str):
+    """在 Word 文档顶栏下方右侧插入照片（25×35mm 一寸照，右对齐段落）。
+
+    inline 图片撑起 35mm 行高，后续正文自动排到照片下方，不会与照片重叠。
+    照片缺失/损坏时静默跳过（warning 日志），不阻断导出。
+    """
+    if not os.path.exists(photo_path):
+        logger.warning("照片文件不存在：%s，将跳过照片插入", photo_path)
+        return
+    try:
+        para = doc.add_paragraph()
+        para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = para.add_run()
+        run.add_picture(photo_path, width=_Cm(2.5), height=_Cm(3.5))
+    except Exception as e:
+        logger.warning("Word 照片插入失败（%s），将跳过：%s", photo_path, _sanitize_error(e), exc_info=True)
+
+
 def _docx_add_section_header(doc, title: str):
     """添加带左侧蓝色边框 + 浅蓝背景的章节标题。"""
 
@@ -503,18 +525,24 @@ def _docx_add_paragraph_with_format(doc, text: str, style: str | None = None,
     return para
 
 
-def markdown_to_docx_bytes(md_text: str, job_target: str = "") -> Tuple[Optional[bytes], Optional[str]]:
+def markdown_to_docx_bytes(md_text: str, job_target: str = "",
+                           photo_path: Optional[str] = None) -> Tuple[Optional[bytes], Optional[str]]:
     """将 Markdown 简历文本转换为 Word (.docx) bytes。
 
     Args:
         md_text: Markdown 格式的简历文本。
         job_target: 可选，求职意向，显示在顶栏。
+        photo_path: 可选的照片文件路径（JPG/PNG），插入在顶栏下方右侧。
 
     Returns:
         (docx_bytes, None) 成功时； (None, error_message) 失败时。
     """
     if not md_text or not md_text.strip():
         return None, "简历内容为空，无法生成 Word 文档。"
+
+    # 正文若已含求职意向（LLM 生成时可能已写入），顶栏不再重复添加
+    if re.search(r"求职意向", md_text):
+        job_target = ""
 
     if _docx is None:
         return None, "Word 生成失败：python-docx 库未安装，请运行 pip install python-docx。"
@@ -541,6 +569,10 @@ def markdown_to_docx_bytes(md_text: str, job_target: str = "") -> Tuple[Optional
         # 提取姓名（第一个 # 一级标题行），其余为正文
         name, name_idx = _extract_resume_name(lines)
         _docx_add_header_bar(doc, name, job_target)
+
+        # 照片（顶栏下方右侧，与 PDF 右上角位置对齐）
+        if photo_path:
+            _docx_add_photo(doc, photo_path)
 
         # ── 渲染正文 ──
         i = name_idx + 1 if name else 0
