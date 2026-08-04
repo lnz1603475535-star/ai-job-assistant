@@ -291,12 +291,9 @@ def render_navigation():
     """底部上一步/下一步按钮。"""
     c1, _, c3 = st.columns([1, 2, 1])
 
-    # 生成中禁用一切导航：任何按钮点击都触发 rerun，会中断正在执行的 workflow
-    busy = st.session_state.processing
-
     with c1:
         if st.session_state.wizard_step > 1:
-            if st.button("← 上一步", use_container_width=True, disabled=busy):
+            if st.button("← 上一步", use_container_width=True):
                 st.session_state.wizard_step -= 1
                 st.rerun()
 
@@ -308,12 +305,12 @@ def render_navigation():
                 "下一步 →" if step < 4 else "去下载 →",
                 type="primary",
                 use_container_width=True,
-                disabled=not can_proceed or busy,
+                disabled=not can_proceed,
             ):
                 st.session_state.wizard_step += 1
                 st.rerun()
         elif step == 5:
-            if st.button("🔄 重新开始", use_container_width=True, disabled=busy):
+            if st.button("🔄 重新开始", use_container_width=True):
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.rerun()
@@ -934,7 +931,7 @@ def render_sidebar():
             preview = edited if edited else st.session_state.exp_bank_content
             st.text(preview[:1200] + ("..." if len(preview) > 1200 else ""))
 
-        if st.button("💾 保存修改", use_container_width=True, disabled=st.session_state.processing):
+        if st.button("💾 保存修改", use_container_width=True):
             try:
                 with open(EXP_BANK_PATH, "w", encoding="utf-8") as f:
                     f.write(edited)
@@ -962,7 +959,7 @@ def render_sidebar():
             label_visibility="collapsed",
         )
 
-        if st.button("🔍 提取并预览", use_container_width=True, disabled=st.session_state.processing):
+        if st.button("🔍 提取并预览", use_container_width=True):
             if len(raw.strip()) < 20:
                 st.warning("请至少输入 20 个字符")
             else:
@@ -1000,7 +997,7 @@ def render_sidebar():
 
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("✅ 确认", type="primary", use_container_width=True, disabled=st.session_state.processing):
+                if st.button("✅ 确认", type="primary", use_container_width=True):
                     try:
                         with open(EXP_BANK_PATH, "a", encoding="utf-8") as f:
                             f.write(f"\n\n{st.session_state.ai_extract_result}")
@@ -1016,7 +1013,7 @@ def render_sidebar():
                     except Exception as e:
                         st.error(f"写入失败：{_sanitize_error(e)}")
             with c2:
-                if st.button("❌ 取消", use_container_width=True, disabled=st.session_state.processing):
+                if st.button("❌ 取消", use_container_width=True):
                     st.session_state.ai_extract_result = None
                     st.rerun()
 
