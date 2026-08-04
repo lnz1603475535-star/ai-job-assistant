@@ -459,7 +459,9 @@ def step_3_user_info():
         value=st.session_state.user_supplement_input,
         height=150,
         placeholder="例如：突出高并发优化经验，弱化前端部分；希望简历体现团队管理能力；这个岗位偏架构方向，侧重系统设计经历",
-        key="user_supplement_input",
+        # widget key 与 session_state key 必须不同名：
+        # widget 实例化后会接管同名 key，代码无法再手动赋值
+        key="user_supplement_widget",
     )
     st.session_state.user_supplement_input = supplement
 
@@ -850,7 +852,7 @@ def step_5_download():
         base = result.get("base_resume", "")
         customized = result.get("customized_resume", "")
         jd_reqs = result.get("jd_requirements")
-        jd_title = str(jd_reqs.title) if jd_reqs else "custom"
+        jd_title = jd_reqs.title if jd_reqs and jd_reqs.title else "custom"
         safe_title = "".join(c for c in jd_title if c.isalnum() or c in " _-")[:30]
 
         # 确保导出缓存已生成
