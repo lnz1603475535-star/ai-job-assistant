@@ -16,12 +16,15 @@ setup_logging()
 
 import core
 from core import load_and_index_documents, set_vectorstore
-from workflow import run_workflow, resume_workflow
+from workflow import run_workflow, resume_workflow, _retrieve_experience_for_jd
 
 # 使用项目自带的样例文件
 SAMPLE_DIR = os.path.join(os.path.dirname(__file__), "samples")
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
+# 注意：USER_TEXT 刻意保持 < 5000 字符（_EXPERIENCE_FULL_TEXT_THRESHOLD），
+# 确保本测试走全文提取路径（断言依赖固定的 USER_TEXT 内容）。
+# 按需检索路径（经验库 > 5000 字符）在验证清单中单独验证（纯本地检索，零 LLM 调用）。
 USER_TEXT = """我叫李思，邮箱 lisi@email.com，电话 13800002222。
 技能包括：Python、Django、FastAPI、Docker、MySQL、Redis、Linux。
 工作经历：
@@ -34,15 +37,15 @@ USER_TEXT = """我叫李思，邮箱 lisi@email.com，电话 13800002222。
 
 
 def test_workflow():
-    """Round 4 终端测试：LangGraph 工作流全链路（与 app.py 一致）。"""
+    """Round 5 终端测试：LangGraph 工作流全链路（与 app.py 一致）。"""
 
     print("=" * 60)
-    print("  AI 简历生成器 — Round 4 终端测试")
+    print("  AI 简历生成器 — Round 5 终端测试")
     print("=" * 60)
 
     # ── 第 1 步：索引文档 ──
     print("\n" + "─" * 60)
-    print("[1/4] 索引文档（FAISS + BM25 双索引）...")
+    print("[1/5] 索引文档（FAISS + BM25 双索引）...")
     print("─" * 60)
 
     sample_resume_path = os.path.join(SAMPLE_DIR, "resume_zhangsan.txt")
@@ -59,14 +62,14 @@ def test_workflow():
 
     # ── 第 2 步：运行工作流（在 check_parsed 后暂停）──
     print("\n" + "─" * 60)
-    print("[2/4] 运行工作流（validate_inputs → extract_style → extract_jd → parse_user → generate_base）...")
+    print("[2/5] 运行工作流（validate_inputs → extract_style → extract_jd → parse_user → generate_base）...")
     print("─" * 60)
 
     result = run_workflow(
         user_text=USER_TEXT,
         sample_resume_path=sample_resume_path,
         jd_path=jd_path,
-        thread_id="test-round4",
+        thread_id="test-round5",
         user_supplement="测试：突出高并发经验，弱化前端",
     )
 
@@ -99,10 +102,10 @@ def test_workflow():
 
     # ── 第 3 步：审核后恢复执行 ──
     print("\n" + "─" * 60)
-    print("[3/4] 恢复工作流（check_parsed → customize）...")
+    print("[3/5] 恢复工作流（check_parsed → customize）...")
     print("─" * 60)
 
-    final_result = resume_workflow(thread_id="test-round4")
+    final_result = resume_workflow(thread_id="test-round5")
     customized = final_result.get("customized_resume", "")
     notifications = final_result.get("notifications", [])
 
@@ -117,7 +120,7 @@ def test_workflow():
 
     # ── 第 4 步：验证清单 ──
     print("\n" + "=" * 60)
-    print("  验证清单")
+    print("[4/5] 验证清单")
     print("=" * 60)
 
     checks = [
@@ -132,6 +135,9 @@ def test_workflow():
         ("customize：已生成", len(customized) > 100),
         ("无 JD 定制失败通知", not any("JD 定制优化失败" in n for n in notifications)),
         ("双索引就绪", vs is not None and core._bm25_index is not None),
+        # 按需检索路径验证：纯本地 FAISS/BM25，零 LLM 调用（复用已提取的 jd_reqs）
+        ("按需检索：返回 user_experience 内容",
+         jd_reqs is not None and bool(_retrieve_experience_for_jd(jd_reqs))),
     ]
 
     all_pass = True
