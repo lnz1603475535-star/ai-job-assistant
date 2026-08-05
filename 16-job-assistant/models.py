@@ -8,36 +8,43 @@ AI 简历生成器 - 数据模型
 import re
 
 from pydantic import BaseModel, Field
-from typing import List
-
 
 # ============================================================
 # 用户画像（内容底线——不能造假）
 # ============================================================
 
+
 class WorkExperience(BaseModel):
     """单段工作/项目经历"""
+
     company: str = Field(description="公司或项目名称")
     title: str = Field(description="职位名称")
     duration: str = Field(description="在职时间段，如 '2022.06-2025.03'")
-    achievements: List[str] = Field(description="主要成就或职责，每条一项")
+    achievements: list[str] = Field(description="主要成就或职责，每条一项")
 
 
 class UserProfile(BaseModel):
     """用户画像——简历的「内容底线」，所有生成不能超出这个范围"""
+
     name: str = Field(description="候选人姓名")
     contact: str = Field(description="联系方式，包括邮箱和电话")
-    skills: List[str] = Field(description="技能列表，如 ['Python', 'FastAPI', 'Docker']")
-    experience: List[WorkExperience] = Field(description="工作/项目经历列表")
-    education: str = Field(description="教育背景，如 '南京大学 计算机科学 本科 2016-2020'")
+    skills: list[str] = Field(
+        description="技能列表，如 ['Python', 'FastAPI', 'Docker']"
+    )
+    experience: list[WorkExperience] = Field(description="工作/项目经历列表")
+    education: str = Field(
+        description="教育背景，如 '南京大学 计算机科学 本科 2016-2020'"
+    )
 
 
 # ============================================================
 # 风格画像（从样本简历提取——怎么写得好看）
 # ============================================================
 
+
 class StyleProfile(BaseModel):
     """风格画像——样本简历的写法特征"""
+
     structure: str = Field(
         description="简历的章节顺序和标题，如 '个人信息 → 技能 → 工作经历 → 教育背景'"
     )
@@ -57,18 +64,29 @@ class StyleProfile(BaseModel):
 # JD 要求（优化方向——往哪使劲）
 # ============================================================
 
+
 class JDRequirements(BaseModel):
     """JD 结构化要求"""
+
     title: str = Field(description="岗位名称")
-    must_have: List[str] = Field(description="必备要求，如 ['5年Python经验', '本科以上']")
-    nice_to_have: List[str] = Field(description="加分项，如 ['有大厂经验优先', '开源贡献']")
-    keywords: List[str] = Field(description="JD 中反复出现的关键词，如 ['高并发', '微服务', 'K8s']")
-    hidden_preferences: str = Field(description="从措辞推断的隐性偏好，如 '偏好有大厂背景的候选人'")
+    must_have: list[str] = Field(
+        description="必备要求，如 ['5年Python经验', '本科以上']"
+    )
+    nice_to_have: list[str] = Field(
+        description="加分项，如 ['有大厂经验优先', '开源贡献']"
+    )
+    keywords: list[str] = Field(
+        description="JD 中反复出现的关键词，如 ['高并发', '微服务', 'K8s']"
+    )
+    hidden_preferences: str = Field(
+        description="从措辞推断的隐性偏好，如 '偏好有大厂背景的候选人'"
+    )
 
 
 # ============================================================
 # AI 提取结果校验
 # ============================================================
+
 
 def validate_experience_markdown(text: str) -> tuple[bool, str]:
     """验证 AI 提取的 Markdown 是否符合经验库条目格式。

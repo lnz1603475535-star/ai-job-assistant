@@ -8,26 +8,25 @@ AI 简历生成器 — LangGraph 工作流
 import logging
 import operator
 import os
+import time
+from collections.abc import Callable
 from typing import Annotated, TypedDict
 
 logger = logging.getLogger(__name__)
 
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.state import CompiledStateGraph
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
-from models import UserProfile, StyleProfile, JDRequirements
+from core import TokenBudget, search_documents_impl
+from models import JDRequirements, StyleProfile, UserProfile
 from resume_engine import (
-    parse_user_info,
-    extract_style,
-    extract_jd_requirements,
-    generate_base_resume,
     customize_for_jd,
-    get_last_token_usage,
-    is_customize_failed,
+    extract_jd_requirements,
+    extract_style,
+    generate_base_resume,
+    parse_user_info,
 )
-from core import search_documents_impl
-
 
 # MemorySaver 单例——断点恢复依赖同一实例跨请求保持状态
 _checkpointer: MemorySaver | None = None
@@ -54,6 +53,7 @@ _EXPERIENCE_RETRIEVE_K = 10
 # State
 # ============================================================
 
+
 class WorkflowState(TypedDict, total=False):
     """工作流状态。一函数一节点的中间产物。"""
 
@@ -66,14 +66,21 @@ class WorkflowState(TypedDict, total=False):
     jd_requirements: JDRequirements
     base_resume: str
     customized_resume: str
-    token_usage: dict  # TODO: 后端阶段接入 TokenBudget 进行成本控制
-    errors: list[str]  # 不用 operator.add：每次 node_validate_inputs 返回全新错误列表，覆盖旧值
-    notifications: Annotated[list[str], operator.add]  # 用 operator.add：多节点各自追加，不覆盖
+    token_usage: (
+        dict  # customize 阶段 token 用量（TokenBudget 在 node_customize 按请求实例化）
+    )
+    errors: list[
+        str
+    ]  # 不用 operator.add：每次 node_validate_inputs 返回全新错误列表，覆盖旧值
+    notifications: Annotated[
+        list[str], operator.add
+    ]  # 用 operator.add：多节点各自追加，不覆盖
 
 
 # ============================================================
 # 节点
 # ============================================================
+
 
 def node_validate_inputs(state: WorkflowState) -> dict[str, object]:
     """节点 1：验证输入。"""
@@ -139,7 +146,8 @@ def node_parse_user(state: WorkflowState) -> dict[str, object]:
             context = retrieved
             logger.info(
                 "按需检索：经验库 %d 字符 → 检索上下文 %d 字符",
-                len(user_text), len(retrieved),
+                len(user_text),
+                len(retrieved),
             )
 
     result = parse_user_info(context)
@@ -167,7 +175,9 @@ def node_check_parsed(state: WorkflowState) -> dict[str, object]:
 
     style = state.get("style_profile")
     if style and style.is_fallback:
-        notifications.append("⚠️ 风格提取失败，已使用默认风格（非样本风格），简历排版可能与预期不同")
+        notifications.append(
+            "⚠️ 风格提取失败，已使用默认风格（非样本风格），简历排版可能与预期不同"
+        )
 
     user = state.get("user_profile")
     if user:
@@ -199,20 +209,33 @@ def node_customize(state: WorkflowState) -> dict[str, object]:
         return {
             "customized_resume": "",
             "token_usage": {},
-            "notifications": ["⚠️ 基础简历为空，已跳过 JD 定制。请检查输入信息后重新生成。"],
+            "notifications": [
+                "⚠️ 基础简历为空，已跳过 JD 定制。请检查输入信息后重新生成。"
+            ],
         }
-    result = customize_for_jd(
+
+    customized, token_usage, failed = customize_for_jd(
         base_resume,
         state["jd_requirements"],
         notifications=state.get("notifications"),
         user_supplement=state.get("user_supplement", ""),
     )
+
     notifications = []
-    if is_customize_failed():
+    if failed:
         notifications.append("⚠️ JD 定制优化失败，已使用基础简历代替")
+
+    # Token 预算：按请求实例化（不做模块级共享，多并发请求互不串数据）
+    budget = TokenBudget()
+    budget.record_from_response(token_usage)
+    warning = budget.get_warning()
+    if warning:
+        notifications.append(warning)
+    logger.info("customize token 用量：%s", budget.get_usage_report())
+
     return {
-        "customized_resume": result,
-        "token_usage": get_last_token_usage(),
+        "customized_resume": customized,
+        "token_usage": token_usage,
         "notifications": notifications,
     }
 
@@ -221,16 +244,43 @@ def node_customize(state: WorkflowState) -> dict[str, object]:
 # 路由
 # ============================================================
 
+
 def router_after_validate(state: WorkflowState) -> str:
-    """validate_inputs 后的条件路由：有错误直接结束，否则继续。"""
+    """validate_inputs 后的条件路由：有错误直接结束，否则继续。
+
+    触发频率统计（metrics 采集）：错误路由带 [路由] 标记打 WARNING，
+    正常路由打 DEBUG——grep app.log 即可统计两种路由的比例。
+    """
     if state.get("errors"):
+        logger.warning(
+            "[路由] 输入验证失败，错误路由触发：%d 条错误", len(state["errors"])
+        )
         return END
+    logger.debug("[路由] 输入验证通过，正常路由")
     return "extract_style"
+
+
+def _timed_node(node_fn: Callable) -> Callable:
+    """包装节点函数：记录单节点耗时（metrics 采集，编译前包装覆盖所有调用路径）。
+
+    图内节点名取 add_node 的 key，不受包装影响；日志带 [节点耗时] 标记便于 grep。
+    """
+
+    def wrapper(state: WorkflowState) -> dict[str, object]:
+        start = time.perf_counter()
+        try:
+            return node_fn(state)
+        finally:
+            elapsed = time.perf_counter() - start
+            logger.info("[节点耗时] %s = %.1fs", node_fn.__name__, elapsed)
+
+    return wrapper
 
 
 # ============================================================
 # 构建工作流
 # ============================================================
+
 
 def build_workflow() -> CompiledStateGraph:
     """构建并编译 LangGraph 工作流（单例模式）。
@@ -245,21 +295,25 @@ def build_workflow() -> CompiledStateGraph:
 
     graph = StateGraph(WorkflowState)
 
-    # 添加节点
-    graph.add_node("validate_inputs", node_validate_inputs)
-    graph.add_node("extract_style", node_extract_style)
-    graph.add_node("parse_user", node_parse_user)
-    graph.add_node("extract_jd", node_extract_jd)
-    graph.add_node("generate_base", node_generate_base)
-    graph.add_node("check_parsed", node_check_parsed)
-    graph.add_node("customize", node_customize)
+    # 添加节点（_timed_node 包装：metrics 采集单节点耗时，图内名称不变）
+    graph.add_node("validate_inputs", _timed_node(node_validate_inputs))
+    graph.add_node("extract_style", _timed_node(node_extract_style))
+    graph.add_node("parse_user", _timed_node(node_parse_user))
+    graph.add_node("extract_jd", _timed_node(node_extract_jd))
+    graph.add_node("generate_base", _timed_node(node_generate_base))
+    graph.add_node("check_parsed", _timed_node(node_check_parsed))
+    graph.add_node("customize", _timed_node(node_customize))
 
     # 连接边
     graph.add_edge(START, "validate_inputs")
-    graph.add_conditional_edges("validate_inputs", router_after_validate, {
-        "extract_style": "extract_style",
-        END: END,
-    })
+    graph.add_conditional_edges(
+        "validate_inputs",
+        router_after_validate,
+        {
+            "extract_style": "extract_style",
+            END: END,
+        },
+    )
     # extract_jd 在 parse_user 之前：parse_user 需要 JD 关键词做按需检索
     graph.add_edge("extract_style", "extract_jd")
     graph.add_edge("extract_jd", "parse_user")
@@ -279,6 +333,7 @@ def build_workflow() -> CompiledStateGraph:
 # ============================================================
 # 便利函数
 # ============================================================
+
 
 def run_workflow(
     user_text: str,

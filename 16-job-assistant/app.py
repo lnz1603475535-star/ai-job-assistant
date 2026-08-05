@@ -6,25 +6,31 @@ AI 简历生成器 — Streamlit UI (Round 4)
 技术栈：LangChain | LangGraph | DeepSeek | FAISS | BM25 | jieba | Streamlit
 """
 
+import json
 import logging
+import os
+import sys
+import tempfile
+import time
+import uuid
+
+import requests as http_requests
 import streamlit as st
-import sys, os, tempfile, uuid
 
 logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from core import (
-    load_and_index_documents,
-    set_vectorstore,
     llm,
+    load_and_index_documents,
     load_file_content,
     setup_logging,
 )
-from workflow import run_workflow, resume_workflow
-from prompts import EXPERIENCE_EXTRACTION_PROMPT
+from exporters import markdown_to_docx_bytes, markdown_to_pdf_bytes, sanitize_error
 from models import validate_experience_markdown
-from exporters import markdown_to_pdf_bytes, markdown_to_docx_bytes, sanitize_error
+from prompts import EXPERIENCE_EXTRACTION_PROMPT
+from workflow import resume_workflow, run_workflow
 
 # ============================================================
 # 常量
@@ -34,13 +40,25 @@ SAMPLE_DIR = os.path.join(os.path.dirname(__file__), "samples")
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 EXP_BANK_PATH = os.path.join(DATA_DIR, "experience_bank.md")
 
+# 后端 API 地址（FastAPI，uvicorn api:app 启动；第 13 课起 UI 优先走后端）
+API_BASE = os.getenv("AI_JOB_API_BASE", "http://127.0.0.1:8000")
+
 AVAILABLE_RESUMES = [
-    {"label": "张三 - Python 后端", "path": os.path.join(SAMPLE_DIR, "resume_zhangsan.txt")},
+    {
+        "label": "张三 - Python 后端",
+        "path": os.path.join(SAMPLE_DIR, "resume_zhangsan.txt"),
+    },
     {"label": "李四 - 前端工程师", "path": os.path.join(SAMPLE_DIR, "resume_lisi.txt")},
 ]
 AVAILABLE_JDS = [
-    {"label": "高级 Python 后端工程师", "path": os.path.join(SAMPLE_DIR, "jd_python_senior.txt")},
-    {"label": "高级前端工程师", "path": os.path.join(SAMPLE_DIR, "jd_frontend_senior.txt")},
+    {
+        "label": "高级 Python 后端工程师",
+        "path": os.path.join(SAMPLE_DIR, "jd_python_senior.txt"),
+    },
+    {
+        "label": "高级前端工程师",
+        "path": os.path.join(SAMPLE_DIR, "jd_frontend_senior.txt"),
+    },
 ]
 WIZARD_STEPS = ["样本简历", "JD 要求", "补充信息", "生成预览", "下载导出"]
 
@@ -48,6 +66,7 @@ WIZARD_STEPS = ["样本简历", "JD 要求", "补充信息", "生成预览", "�
 # ============================================================
 # 辅助函数
 # ============================================================
+
 
 def load_experience_bank() -> str:
     """读取经验库文件内容，首次运行时自动创建。"""
@@ -65,7 +84,9 @@ def load_experience_bank() -> str:
             content = f.read()
         return content if content.strip() else "# 经验库\n\n在此粘贴你的项目经历。\n"
     except (UnicodeDecodeError, OSError, PermissionError) as e:
-        st.error(f"经验库文件读取失败：{sanitize_error(e)}，请手动检查或删除 data/experience_bank.md")
+        st.error(
+            f"经验库文件读取失败：{sanitize_error(e)}，请手动检查或删除 data/experience_bank.md"
+        )
         return "# 经验库\n\n在此粘贴你的项目经历。\n"
 
 
@@ -81,9 +102,9 @@ def initialize_session_state():
         "docs_indexed": False,
         "user_supplement_input": "",  # Step 3 补充指引（与 workflow 的 user_text=经验库 语义区分）
         "workflow_result": None,
-        "workflow_paused": False,       # True 表示工作流停在 check_parsed 断点，等待审核
-        "paused_result": None,          # 断点暂停时的中间 state（含 base_resume + notifications）
-        "paused_lost": False,           # True 表示审核状态意外丢失，需提示用户
+        "workflow_paused": False,  # True 表示工作流停在 check_parsed 断点，等待审核
+        "paused_result": None,  # 断点暂停时的中间 state（含 base_resume + notifications）
+        "paused_lost": False,  # True 表示审核状态意外丢失，需提示用户
         "processing": False,
         "show_ai_extract": False,
         "ai_extract_result": None,
@@ -117,9 +138,11 @@ def save_uploaded_file(uploaded_file, prefix: str = "upload") -> tuple[str, str 
         return "", "文件内容为空，请检查后重新上传。"
 
     suffix = os.path.splitext(uploaded_file.name)[1]
-    if not suffix or suffix == ".":           # 无扩展名或只有点 → 默认 txt
+    if not suffix or suffix == ".":  # 无扩展名或只有点 → 默认 txt
         suffix = ".txt"
-    path = os.path.join(tempfile.gettempdir(), f"{prefix}_{uuid.uuid4().hex[:8]}{suffix}")
+    path = os.path.join(
+        tempfile.gettempdir(), f"{prefix}_{uuid.uuid4().hex[:8]}{suffix}"
+    )
     try:
         with open(path, "wb") as f:
             f.write(content)
@@ -189,6 +212,99 @@ def _reset_workflow_state() -> None:
     # 注意：user_photo_path 不清除——用户不希望重新上传照片
 
 
+def _consume_customize_sse(task_id: str):
+    """消费后端定制 SSE 流，yield 文本块给 st.write_stream 实时展示。
+
+    事件格式对齐 LangGraph messages/partial 标准（见 api.py）；
+    done 事件的结果写入 session_state["_stream_result"]。
+    """
+    url = f"{API_BASE}/api/resume/customize/stream/{task_id}"
+    with http_requests.get(url, stream=True, timeout=(10, 300)) as resp:
+        if resp.status_code != 200:
+            raise RuntimeError(f"SSE 连接失败：HTTP {resp.status_code}")
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: "):
+                continue
+            payload = json.loads(line[6:])
+            if "messages" in payload:
+                for m in payload["messages"]:
+                    content = m.get("content", "")
+                    if content:
+                        yield content
+            elif "customized_resume" in payload:
+                st.session_state._stream_result = payload
+
+
+def _poll_stream_result(task_id: str, timeout: int = 240) -> dict:
+    """轮询流式定制任务结果（SSE 断开后的兜底路径）。
+
+    任务在后端后台线程执行，不依赖前端连接——前端中断不影响任务。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r = http_requests.get(
+            f"{API_BASE}/api/resume/customize/result/{task_id}", timeout=10
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if data["status"] == "done" and data["result"] is not None:
+                return data["result"]
+        time.sleep(2)
+    raise TimeoutError(f"等待定制结果超时（task={task_id}）")
+
+
+def _customize_via_api() -> dict | None:
+    """通过后端 API 完成 JD 定制（异步提交 + SSE 流式 + 轮询兜底）。
+
+    返回定制结果 dict（与 workflow result 同构）；
+    后端不可用/连接失败 → 返回 None，调用方回退本地执行；
+    checkpoint 丢失（后端 404）→ 抛 RuntimeError("checkpoint_lost")。
+
+    复用未完成的 task_id：前端中断后任务仍在后台执行，重新点击时
+    直接轮询结果而非重复提交（避免重复 LLM 调用扣费）。
+    """
+    task_id = st.session_state.get("_stream_task_id")
+    try:
+        if task_id is None:
+            r = http_requests.post(
+                f"{API_BASE}/api/resume/customize/stream",
+                json={"thread_id": st.session_state.session_id},
+                timeout=10,
+            )
+            if r.status_code == 404:
+                raise RuntimeError("checkpoint_lost")
+            r.raise_for_status()
+            task_id = r.json()["task_id"]
+            st.session_state._stream_task_id = task_id
+
+        st.session_state._stream_result = None
+        st.write("🤖 **AI 正在根据 JD 定制简历...**")
+        st.write_stream(_consume_customize_sse(task_id))
+
+        done = st.session_state.get("_stream_result")
+        if done is None:
+            # SSE 意外断开 → 任务在后台继续，轮询结果兜底
+            logger.warning("SSE 流中断，转轮询任务结果：task=%s", task_id)
+            done = _poll_stream_result(task_id)
+
+        st.session_state._stream_task_id = None
+        return {
+            "customized_resume": done["customized_resume"],
+            "token_usage": done.get("token_usage", {}),
+            "notifications": (
+                ["⚠️ JD 定制优化失败，已使用基础简历代替"] if done.get("failed") else []
+            ),
+        }
+    except RuntimeError as e:
+        if str(e) == "checkpoint_lost":
+            raise
+        logger.warning("后端 API 定制失败，回退本地执行：%s", sanitize_error(e))
+        return None
+    except (http_requests.RequestException, TimeoutError, json.JSONDecodeError) as e:
+        logger.warning("后端 API 不可用，回退本地执行：%s", sanitize_error(e))
+        return None
+
+
 def index_documents_if_needed():
     """如果还没索引，就索引文档。失败时给出分类提示并允许重试。"""
     if st.session_state.docs_indexed:
@@ -198,19 +314,24 @@ def index_documents_if_needed():
 
     with st.spinner("📚 正在索引文档..."):
         try:
-            vs, chunks = load_and_index_documents({
-                "user_experience": [EXP_BANK_PATH],
-                "sample_resume": [st.session_state.resume_path],
-                "jd": [st.session_state.jd_path],
-            })
-            set_vectorstore(vs, chunks)
+            service = load_and_index_documents(
+                {
+                    "user_experience": [EXP_BANK_PATH],
+                    "sample_resume": [st.session_state.resume_path],
+                    "jd": [st.session_state.jd_path],
+                }
+            )
             st.session_state.docs_indexed = True
             st.session_state.index_error = None
-            st.toast(f"✅ 已索引 {len(chunks)} 个文本块")
+            st.toast(f"✅ 已索引 {service.chunk_count} 个文本块")
         except (UnicodeDecodeError, ValueError) as e:
             logger.error("文档索引失败（编码/格式错误）：%s", sanitize_error(e))
             error_str = str(e).lower()
-            if "不存在" in error_str or "无法访问" in error_str or "not found" in error_str:
+            if (
+                "不存在" in error_str
+                or "无法访问" in error_str
+                or "not found" in error_str
+            ):
                 st.session_state.index_error = "missing"
             elif "加密" in error_str or "encrypt" in error_str or "密码" in error_str:
                 st.session_state.index_error = "pdf_encrypted"
@@ -228,7 +349,11 @@ def index_documents_if_needed():
             error_str = str(e).lower()
             if "empty" in error_str or "no text" in error_str:
                 st.session_state.index_error = "empty"
-            elif "connect" in error_str or "timeout" in error_str or "download" in error_str:
+            elif (
+                "connect" in error_str
+                or "timeout" in error_str
+                or "download" in error_str
+            ):
                 st.session_state.index_error = "network"
             else:
                 st.session_state.index_error = "unknown"
@@ -244,7 +369,7 @@ def show_index_error():
     messages = {
         "encoding": "文件编码不支持，请确保上传的是 UTF-8 编码的 .txt 文件。",
         "missing": "文件已被移动或删除，请回到前几步重新选择。",
-        "empty":   "文件内容为空，请检查后重新选择。",
+        "empty": "文件内容为空，请检查后重新选择。",
         "network": "首次使用需下载模型（约 400MB），请检查网络连接后重试。",
         "pdf_encrypted": "PDF 文件已加密，请先解密为普通 PDF 后重新上传。",
         "pdf_scanned": "PDF 可能是扫描件，无法提取文字。请上传含文本的 PDF 或使用 OCR 工具转换。",
@@ -271,6 +396,7 @@ def show_index_error():
 # UI 组件
 # ============================================================
 
+
 def render_step_indicator(current_step: int):
     """顶部分步进度条。"""
     cols = st.columns(5)
@@ -292,10 +418,11 @@ def render_navigation():
     c1, _, c3 = st.columns([1, 2, 1])
 
     with c1:
-        if st.session_state.wizard_step > 1:
-            if st.button("← 上一步", use_container_width=True):
-                st.session_state.wizard_step -= 1
-                st.rerun()
+        if st.session_state.wizard_step > 1 and st.button(
+            "← 上一步", use_container_width=True
+        ):
+            st.session_state.wizard_step -= 1
+            st.rerun()
 
     with c3:
         step = st.session_state.wizard_step
@@ -320,9 +447,12 @@ def render_navigation():
 # Step 1：选择样本简历
 # ============================================================
 
+
 def step_1_resume():
     st.header("① 选择样本简历")
-    st.caption("上传一份你喜欢的简历作为风格参考，或从样例中选择。AI 会学习它的结构、措辞和排版风格。")
+    st.caption(
+        "上传一份你喜欢的简历作为风格参考，或从样例中选择。AI 会学习它的结构、措辞和排版风格。"
+    )
 
     source = st.radio(
         "简历来源",
@@ -332,7 +462,11 @@ def step_1_resume():
     )
 
     if source == "📁 上传文件":
-        uploaded = st.file_uploader("上传简历 (.txt, .pdf, .docx, .md)", type=["txt", "pdf", "docx", "md"], key="step1_uploader")
+        uploaded = st.file_uploader(
+            "上传简历 (.txt, .pdf, .docx, .md)",
+            type=["txt", "pdf", "docx", "md"],
+            key="step1_uploader",
+        )
         if uploaded:
             path, error = save_uploaded_file(uploaded, "resume")
             if error:
@@ -368,6 +502,7 @@ def step_1_resume():
 # Step 2：选择 JD
 # ============================================================
 
+
 def step_2_jd():
     st.header("② 选择职位描述 (JD)")
     st.caption("上传文件、粘贴文字、或从样例中选择。AI 会根据 JD 要求定制简历内容。")
@@ -380,7 +515,11 @@ def step_2_jd():
     )
 
     if source == "📁 上传文件":
-        uploaded = st.file_uploader("上传 JD (.txt, .pdf, .docx, .md)", type=["txt", "pdf", "docx", "md"], key="step2_uploader")
+        uploaded = st.file_uploader(
+            "上传 JD (.txt, .pdf, .docx, .md)",
+            type=["txt", "pdf", "docx", "md"],
+            key="step2_uploader",
+        )
         if uploaded:
             path, error = save_uploaded_file(uploaded, "jd")
             if error:
@@ -413,7 +552,9 @@ def step_2_jd():
             elif len(stripped) < 20:
                 st.warning("粘贴的文字太短，请至少包含完整的岗位职责。")
             else:
-                path = os.path.join(tempfile.gettempdir(), f"jd_paste_{uuid.uuid4().hex[:8]}.txt")
+                path = os.path.join(
+                    tempfile.gettempdir(), f"jd_paste_{uuid.uuid4().hex[:8]}.txt"
+                )
                 try:
                     with open(path, "w", encoding="utf-8") as f:
                         f.write(stripped)
@@ -450,9 +591,12 @@ def step_2_jd():
 # Step 3：补充信息（可选）
 # ============================================================
 
+
 def step_3_user_info():
     st.header("③ 补充信息（可选）")
-    st.caption("你的工作经历已从经验库自动读取。这里可以补充简历侧重点、岗位理解、想强调或弱化的内容。")
+    st.caption(
+        "你的工作经历已从经验库自动读取。这里可以补充简历侧重点、岗位理解、想强调或弱化的内容。"
+    )
 
     supplement = st.text_area(
         "补充指引",
@@ -490,7 +634,11 @@ def step_3_user_info():
         try:
             st.image(st.session_state.user_photo_path, width=80, caption="当前照片")
         except Exception:
-            logger.warning("照片文件加载失败，已清除：%s", st.session_state.user_photo_path, exc_info=True)
+            logger.warning(
+                "照片文件加载失败，已清除：%s",
+                st.session_state.user_photo_path,
+                exc_info=True,
+            )
             st.session_state.user_photo_path = None
             st.warning("照片文件已失效，请重新上传。")
         if st.button("🗑 移除照片", key="remove_photo"):
@@ -501,6 +649,7 @@ def step_3_user_info():
 # ============================================================
 # Step 4：生成预览
 # ============================================================
+
 
 def step_4_generate_preview():
     st.header("④ 生成预览")
@@ -529,7 +678,9 @@ def step_4_generate_preview():
             jd_reqs = result.get("jd_requirements")
 
             if user:
-                st.write(f"**解析用户**：{user.name}，{len(user.skills)} 项技能，{len(user.experience)} 段经历")
+                st.write(
+                    f"**解析用户**：{user.name}，{len(user.skills)} 项技能，{len(user.experience)} 段经历"
+                )
             if style:
                 st.write(f"**风格**：{style.structure[:60]}...")
             if jd_reqs:
@@ -582,14 +733,18 @@ def step_4_generate_preview():
         with st.expander("🔍 解析摘要（点击展开）"):
             if user:
                 st.write(f"**姓名**：{user.name or '（未识别）'}")
-                st.write(f"**技能**：{', '.join(user.skills) if user.skills else '（未识别）'}")
+                st.write(
+                    f"**技能**：{', '.join(user.skills) if user.skills else '（未识别）'}"
+                )
                 st.write(f"**经历**：{len(user.experience)} 段")
             if style:
                 fallback_tag = " ⚠️ 默认风格" if style.is_fallback else ""
                 st.write(f"**风格**：{style.structure[:80]}...{fallback_tag}")
             if jd_reqs:
                 st.write(f"**目标岗位**：{jd_reqs.title}")
-                st.write(f"**关键词**：{', '.join(jd_reqs.keywords) if jd_reqs.keywords else '（未提取到）'}")
+                st.write(
+                    f"**关键词**：{', '.join(jd_reqs.keywords) if jd_reqs.keywords else '（未提取到）'}"
+                )
 
         # 基础简历预览
         st.subheader("📄 基础简历预览")
@@ -603,38 +758,88 @@ def step_4_generate_preview():
         st.divider()
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("✅ 审核通过，继续 JD 定制", type="primary", use_container_width=True, disabled=st.session_state.processing):
+            if st.button(
+                "✅ 审核通过，继续 JD 定制",
+                type="primary",
+                use_container_width=True,
+                disabled=st.session_state.processing,
+            ):
                 st.session_state.processing = True
-                with st.spinner("🤖 AI 正在根据 JD 定制简历... 这可能需要 20-40 秒"):
-                    try:
-                        result = resume_workflow(thread_id=st.session_state.session_id)
+                # ── 优先后端 API：异步提交 + SSE 流式实时展示 ──
+                # 前端中断（切按钮/刷新）不再影响任务执行：任务在后端后台线程
+                # 运行，重进页面/重新点击会复用 task_id 轮询结果而非重复生成
+                api_handled = False
+                try:
+                    result = _customize_via_api()
+                    if result is not None:
+                        api_handled = True
                         st.session_state.workflow_result = result
                         st.session_state.workflow_paused = False
                         st.session_state.paused_result = None
                         st.rerun()
-                    except RuntimeError:
-                        logger.warning("resume_workflow 失败：checkpoint 不存在", exc_info=True)
-                        st.error(
-                            "工作流状态丢失，无法继续。请点击下方「重新生成」按钮重新开始。"
-                            "这通常是因为服务重启导致缓存被清空。"
-                        )
-                        st.session_state.workflow_paused = False
-                        st.session_state.paused_result = None
-                        st.session_state.processing = False
-                    except Exception as e:
-                        logger.exception("resume_workflow 执行失败")
-                        st.session_state.processing = False
-                        error_str = str(e).lower()
-                        if "timeout" in error_str or "timed out" in error_str:
-                            st.error("请求超时，请检查网络后重试。您可以再次点击「审核通过」按钮继续。")
-                        elif "rate limit" in error_str or "too many" in error_str:
-                            st.warning("请求过于频繁，请稍等片刻后重试。")
-                        elif "unauthorized" in error_str or "auth" in error_str or "api key" in error_str or "apikey" in error_str:
-                            st.error("API 认证失败，请检查 .env 中的 DEEPSEEK_API_KEY 是否正确。")
-                        elif "connect" in error_str or "network" in error_str or "refused" in error_str:
-                            st.error("无法连接到 AI 服务，请检查网络连接后重试。")
-                        else:
-                            st.error(f"JD 定制失败：{sanitize_error(e)}")
+                except RuntimeError:
+                    # 后端 404：checkpoint 丢失（服务重启导致），本地同样没有
+                    logger.warning("API 定制失败：checkpoint 不存在", exc_info=True)
+                    st.error(
+                        "工作流状态丢失，无法继续。请点击下方「重新生成」按钮重新开始。"
+                        "这通常是因为服务重启导致缓存被清空。"
+                    )
+                    st.session_state.workflow_paused = False
+                    st.session_state.paused_result = None
+                    st.session_state.processing = False
+                    api_handled = True
+
+                # ── 本地兜底（后端 API 不可用时的保底路径）──
+                if not api_handled:
+                    with st.spinner(
+                        "🤖 AI 正在根据 JD 定制简历... 这可能需要 20-40 秒"
+                    ):
+                        try:
+                            result = resume_workflow(
+                                thread_id=st.session_state.session_id
+                            )
+                            st.session_state.workflow_result = result
+                            st.session_state.workflow_paused = False
+                            st.session_state.paused_result = None
+                            st.rerun()
+                        except RuntimeError:
+                            logger.warning(
+                                "resume_workflow 失败：checkpoint 不存在", exc_info=True
+                            )
+                            st.error(
+                                "工作流状态丢失，无法继续。请点击下方「重新生成」按钮重新开始。"
+                                "这通常是因为服务重启导致缓存被清空。"
+                            )
+                            st.session_state.workflow_paused = False
+                            st.session_state.paused_result = None
+                            st.session_state.processing = False
+                        except Exception as e:
+                            logger.exception("resume_workflow 执行失败")
+                            st.session_state.processing = False
+                            error_str = str(e).lower()
+                            if "timeout" in error_str or "timed out" in error_str:
+                                st.error(
+                                    "请求超时，请检查网络后重试。您可以再次点击「审核通过」按钮继续。"
+                                )
+                            elif "rate limit" in error_str or "too many" in error_str:
+                                st.warning("请求过于频繁，请稍等片刻后重试。")
+                            elif (
+                                "unauthorized" in error_str
+                                or "auth" in error_str
+                                or "api key" in error_str
+                                or "apikey" in error_str
+                            ):
+                                st.error(
+                                    "API 认证失败，请检查 .env 中的 DEEPSEEK_API_KEY 是否正确。"
+                                )
+                            elif (
+                                "connect" in error_str
+                                or "network" in error_str
+                                or "refused" in error_str
+                            ):
+                                st.error("无法连接到 AI 服务，请检查网络连接后重试。")
+                            else:
+                                st.error(f"JD 定制失败：{sanitize_error(e)}")
         with c2:
             if st.button("🔄 放弃并重新生成", use_container_width=True):
                 _reset_workflow_state()
@@ -659,9 +864,14 @@ def step_4_generate_preview():
 
     if st.session_state.user_supplement_input.strip():
         with st.expander("📝 补充信息（点击展开）"):
-            st.text(st.session_state.user_supplement_input[:800] + ("..." if len(st.session_state.user_supplement_input) > 800 else ""))
+            st.text(
+                st.session_state.user_supplement_input[:800]
+                + ("..." if len(st.session_state.user_supplement_input) > 800 else "")
+            )
 
-    if st.button("🚀 开始生成简历", type="primary", disabled=st.session_state.processing):
+    if st.button(
+        "🚀 开始生成简历", type="primary", disabled=st.session_state.processing
+    ):
         st.session_state.processing = True
         st.session_state.workflow_result = None
         st.session_state.workflow_paused = False
@@ -700,7 +910,9 @@ def step_4_generate_preview():
                     st.session_state.workflow_paused = True
                 else:
                     # 意外情况：工作流没有暂停直接完成了
-                    logger.warning("工作流未在断点暂停，直接完成了（interrupt_after 可能未生效）")
+                    logger.warning(
+                        "工作流未在断点暂停，直接完成了（interrupt_after 可能未生效）"
+                    )
                     st.session_state.workflow_result = result
                 st.session_state.processing = False
                 st.rerun()
@@ -711,9 +923,20 @@ def step_4_generate_preview():
                     st.error("请求超时，请检查网络后点击【重新生成】重试。")
                 elif "rate limit" in error_str or "too many" in error_str:
                     st.warning("请求过于频繁，请稍等片刻后重试。")
-                elif "unauthorized" in error_str or "auth" in error_str or "api key" in error_str or "apikey" in error_str:
-                    st.error("API 认证失败，请检查 .env 中的 DEEPSEEK_API_KEY 是否正确。")
-                elif "connect" in error_str or "network" in error_str or "refused" in error_str:
+                elif (
+                    "unauthorized" in error_str
+                    or "auth" in error_str
+                    or "api key" in error_str
+                    or "apikey" in error_str
+                ):
+                    st.error(
+                        "API 认证失败，请检查 .env 中的 DEEPSEEK_API_KEY 是否正确。"
+                    )
+                elif (
+                    "connect" in error_str
+                    or "network" in error_str
+                    or "refused" in error_str
+                ):
                     st.error("无法连接到 AI 服务，请检查网络连接后重试。")
                 else:
                     st.error(f"生成失败：{sanitize_error(e)}")
@@ -724,6 +947,7 @@ def step_4_generate_preview():
 # Step 5：下载导出
 # ============================================================
 
+
 def _ensure_export_cache(result: dict):
     """确保导出 bytes 已缓存到 session_state，避免每次 rerun 重新生成。"""
     base = result.get("base_resume", "")
@@ -731,10 +955,14 @@ def _ensure_export_cache(result: dict):
 
     photo = st.session_state.get("user_photo_path")
     jd_reqs = result.get("jd_requirements")
-    job_target = jd_reqs.title if jd_reqs and jd_reqs.title else ""  # 与 step_5 的 jd_title 守卫一致
+    job_target = (
+        jd_reqs.title if jd_reqs and jd_reqs.title else ""
+    )  # 与 step_5 的 jd_title 守卫一致
 
     if st.session_state.export_customized_pdf is None and customized:
-        pdf_bytes, pdf_err = markdown_to_pdf_bytes(customized, photo_path=photo, job_target=job_target)
+        pdf_bytes, pdf_err = markdown_to_pdf_bytes(
+            customized, photo_path=photo, job_target=job_target
+        )
         if pdf_err:
             logger.error("定制简历 PDF 导出失败：%s", pdf_err)
             st.session_state.export_customized_pdf = ("error", pdf_err)
@@ -742,7 +970,9 @@ def _ensure_export_cache(result: dict):
             st.session_state.export_customized_pdf = ("ok", pdf_bytes)
 
     if st.session_state.export_customized_docx is None and customized:
-        docx_bytes, docx_err = markdown_to_docx_bytes(customized, job_target=job_target, photo_path=photo)
+        docx_bytes, docx_err = markdown_to_docx_bytes(
+            customized, job_target=job_target, photo_path=photo
+        )
         if docx_err:
             logger.error("定制简历 Word 导出失败：%s", docx_err)
             st.session_state.export_customized_docx = ("error", docx_err)
@@ -750,7 +980,9 @@ def _ensure_export_cache(result: dict):
             st.session_state.export_customized_docx = ("ok", docx_bytes)
 
     if st.session_state.export_base_pdf is None and base:
-        pdf_bytes, pdf_err = markdown_to_pdf_bytes(base, photo_path=photo, job_target=job_target)
+        pdf_bytes, pdf_err = markdown_to_pdf_bytes(
+            base, photo_path=photo, job_target=job_target
+        )
         if pdf_err:
             logger.error("基础简历 PDF 导出失败：%s", pdf_err)
             st.session_state.export_base_pdf = ("error", pdf_err)
@@ -758,7 +990,9 @@ def _ensure_export_cache(result: dict):
             st.session_state.export_base_pdf = ("ok", pdf_bytes)
 
     if st.session_state.export_base_docx is None and base:
-        docx_bytes, docx_err = markdown_to_docx_bytes(base, job_target=job_target, photo_path=photo)
+        docx_bytes, docx_err = markdown_to_docx_bytes(
+            base, job_target=job_target, photo_path=photo
+        )
         if docx_err:
             logger.error("基础简历 Word 导出失败：%s", docx_err)
             st.session_state.export_base_docx = ("error", docx_err)
@@ -766,8 +1000,9 @@ def _ensure_export_cache(result: dict):
             st.session_state.export_base_docx = ("ok", docx_bytes)
 
 
-def _render_download_buttons(label_prefix: str, md_text: str, file_prefix: str,
-                              pdf_key: str, docx_key: str):
+def _render_download_buttons(
+    label_prefix: str, md_text: str, file_prefix: str, pdf_key: str, docx_key: str
+):
     """渲染一组三列下载按钮（Markdown / PDF / Word）。
 
     Args:
@@ -859,7 +1094,9 @@ def step_5_download():
         # ── 定制简历 ──
         st.subheader("🎯 JD 定制简历")
         if not customized.strip():
-            st.warning("JD 定制被跳过（基础简历为空），请点击「重新生成」检查输入信息。")
+            st.warning(
+                "JD 定制被跳过（基础简历为空），请点击「重新生成」检查输入信息。"
+            )
         else:
             st.markdown(customized)
             _render_download_buttons(
@@ -906,6 +1143,7 @@ def step_5_download():
 # ============================================================
 # 侧边栏：经验库管理
 # ============================================================
+
 
 def render_sidebar():
     with st.sidebar:
@@ -987,8 +1225,10 @@ def render_sidebar():
             st.markdown("---")
             st.caption("### 提取结果预览")
             st.info("请确认以下内容准确无误：")
-            st.text(st.session_state.ai_extract_result[:800] +
-                    ("..." if len(st.session_state.ai_extract_result) > 800 else ""))
+            st.text(
+                st.session_state.ai_extract_result[:800]
+                + ("..." if len(st.session_state.ai_extract_result) > 800 else "")
+            )
 
             c1, c2 = st.columns(2)
             with c1:
@@ -1002,7 +1242,9 @@ def render_sidebar():
                         st.toast("✅ 已追加到经验库！")
                         st.rerun()
                     except PermissionError:
-                        st.error("写入失败：文件被占用或没有写入权限，请关闭其他程序后重试。")
+                        st.error(
+                            "写入失败：文件被占用或没有写入权限，请关闭其他程序后重试。"
+                        )
                     except OSError:
                         st.error("写入失败：磁盘空间不足或文件系统错误，请检查后重试。")
                     except Exception as e:
@@ -1018,8 +1260,12 @@ def render_sidebar():
         st.caption("### 📊 当前状态")
         resume_ok = st.session_state.resume_name is not None
         jd_ok = st.session_state.jd_name is not None
-        st.caption(f"{'✅' if resume_ok else '❌'} 简历：{st.session_state.resume_name or '未选择'}")
-        st.caption(f"{'✅' if jd_ok else '❌'} JD：{st.session_state.jd_name or '未选择'}")
+        st.caption(
+            f"{'✅' if resume_ok else '❌'} 简历：{st.session_state.resume_name or '未选择'}"
+        )
+        st.caption(
+            f"{'✅' if jd_ok else '❌'} JD：{st.session_state.jd_name or '未选择'}"
+        )
         st.caption(f"{'✅' if st.session_state.docs_indexed else '⏳'} 文档索引")
         if st.session_state.workflow_result:
             cr = st.session_state.workflow_result.get("customized_resume", "")
@@ -1029,6 +1275,7 @@ def render_sidebar():
 # ============================================================
 # 主函数
 # ============================================================
+
 
 def main():
     setup_logging()

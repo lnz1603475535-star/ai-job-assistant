@@ -8,13 +8,15 @@ AI 简历生成器 - Prompt 模板
 
 from langchain_core.prompts import ChatPromptTemplate
 
-
 # ============================================================
 # 1. 用户信息提取
 # ============================================================
 
-USER_INFO_PARSE_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """你是一个简历信息提取专家。从用户提供的非结构化文本中，提取结构化简历信息。
+USER_INFO_PARSE_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """你是一个简历信息提取专家。从用户提供的非结构化文本中，提取结构化简历信息。
 
 {format_instructions}
 
@@ -24,17 +26,22 @@ USER_INFO_PARSE_PROMPT = ChatPromptTemplate.from_messages([
 - 技能从"技能"相关描述或工作描述中提取，去重后按相关性排序
 - 工作经历按时间段拆分为独立的 WorkExperience，时间段统一格式为 "YYYY.MM-YYYY.MM"
 - 教育背景合并为一段文字
-- 不要编造用户没有提到的信息。如果某字段确实没有提到，用空字符串或空列表"""),
-    ("human", "{user_text}"),
-])
+- 不要编造用户没有提到的信息。如果某字段确实没有提到，用空字符串或空列表""",
+        ),
+        ("human", "{user_text}"),
+    ]
+)
 
 
 # ============================================================
 # 2. 风格提取
 # ============================================================
 
-STYLE_EXTRACTION_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """你是一个简历格式分析专家。分析样本简历的结构风格。
+STYLE_EXTRACTION_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """你是一个简历格式分析专家。分析样本简历的结构风格。
 
 {format_instructions}
 
@@ -43,17 +50,22 @@ STYLE_EXTRACTION_PROMPT = ChatPromptTemplate.from_messages([
 - tone：语言风格是简洁专业、突出成果数据、偏技术术语，还是偏管理？
 - format_patterns：具体句式特点，如"用动词开头写成就"、"每段经历 3 条"、"用 STAR 法则"、"时间格式是 YYYY.MM"、"使用数字量化成果：提升了 X% / 减少了 Y%"
 - 如果样本内容很短或结构不明显，根据你的专业知识推断合理风格
-- 只基于样本简历实际内容分析，不要编造"""),
-    ("human", "样本简历内容：\n\n{resume_text}"),
-])
+- 只基于样本简历实际内容分析，不要编造""",
+        ),
+        ("human", "样本简历内容：\n\n{resume_text}"),
+    ]
+)
 
 
 # ============================================================
 # 3. JD 要求提取
 # ============================================================
 
-JD_REQUIREMENTS_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """你是一个职位分析专家。从招聘 JD 中提取结构化要求。
+JD_REQUIREMENTS_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """你是一个职位分析专家。从招聘 JD 中提取结构化要求。
 
 {format_instructions}
 
@@ -62,17 +74,22 @@ JD_REQUIREMENTS_PROMPT = ChatPromptTemplate.from_messages([
 - nice_to_have：加分项、优先条件（"有...优先"、"加分项"）
 - keywords：JD 中反复出现的技术名词和业务术语，去重后按出现频率排序
 - hidden_preferences：从措辞中推断的隐性偏好（如"大厂经验优先"暗示偏好有大厂背景的人）
-- 如果 JD 包含技术栈要求，单独提取到 keywords 中"""),
-    ("human", "JD 内容：\n\n{jd_text}"),
-])
+- 如果 JD 包含技术栈要求，单独提取到 keywords 中""",
+        ),
+        ("human", "JD 内容：\n\n{jd_text}"),
+    ]
+)
 
 
 # ============================================================
 # 4. 基础简历生成
 # ============================================================
 
-BASE_RESUME_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """你是一个专业简历撰写专家。根据用户画像和风格偏好，生成一份完整的简历。
+BASE_RESUME_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """你是一个专业简历撰写专家。根据用户画像和风格偏好，生成一份完整的简历。
 
 要求：
 1. 严格按照风格偏好中定义的 structure 组织章节顺序
@@ -83,15 +100,20 @@ BASE_RESUME_PROMPT = ChatPromptTemplate.from_messages([
 6. 简历开头必须包含姓名和联系方式
 7. 教育背景放在最后一部分
 8. 工作经历中的每个成就用 STAR 法则（情境-任务-行动-结果）描述
-9. 不要输出任何解释性文字，只输出简历本身"""),
-    ("human", """请根据以下信息生成简历：
+9. 不要输出任何解释性文字，只输出简历本身""",
+        ),
+        (
+            "human",
+            """请根据以下信息生成简历：
 
 用户画像：
 {user_profile}
 
 风格偏好：
-{style_profile}"""),
-])
+{style_profile}""",
+        ),
+    ]
+)
 
 
 # ============================================================
@@ -99,8 +121,7 @@ BASE_RESUME_PROMPT = ChatPromptTemplate.from_messages([
 # ============================================================
 
 # Agent 版：用于 create_agent() 的 system_prompt（当前使用）
-JD_CUSTOMIZE_SYSTEM_PROMPT = (
-    """你是一个简历优化专家。根据 JD 要求优化简历。
+JD_CUSTOMIZE_SYSTEM_PROMPT = """你是一个简历优化专家。根据 JD 要求优化简历。
 
 规则：
 1. 使用 search_documents 查找用户经历中与 JD 相关的细节
@@ -118,11 +139,13 @@ JD_CUSTOMIZE_SYSTEM_PROMPT = (
 - "JD 解析不完整" / "未提取到 JD 关键词" → 更多依赖 JD 标题和必备要求做匹配，同时用 search_documents 搜索经验库中与岗位相关的经历
 - "风格提取失败" → 使用标准简历排版：个人信息 → 技能 → 工作经历 → 教育背景
 - "基础简历生成为空" → 仅根据 JD 要求和经验库搜索结果，生成一份基础简历框架"""
-)
 
 # LCEL 版：用于 ChatPromptTemplate 链（备用，后续升级可用）
-JD_CUSTOMIZE_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """你是一个简历优化专家。根据 JD 要求，对简历进行针对性修改，提高简历与岗位的匹配度。
+JD_CUSTOMIZE_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """你是一个简历优化专家。根据 JD 要求，对简历进行针对性修改，提高简历与岗位的匹配度。
 
 优化原则：
 1. 保持事实准确——绝对不要编造用户没有的经历或技能
@@ -136,17 +159,22 @@ JD 要求详情：
 - 必备要求：{must_have}
 - 加分项：{nice_to_have}
 - 关键词：{keywords}
-- 隐性偏好：{hidden_preferences}"""),
-    ("human", "简历原文：\n\n{base_resume}"),
-])
+- 隐性偏好：{hidden_preferences}""",
+        ),
+        ("human", "简历原文：\n\n{base_resume}"),
+    ]
+)
 
 
 # ============================================================
 # 6. 经验库条目提取（侧边栏 AI 整理）
 # ============================================================
 
-EXPERIENCE_EXTRACTION_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """你是一个经验库整理专家。从用户的口语描述中提取工作经历，格式化为结构化的 Markdown。
+EXPERIENCE_EXTRACTION_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """你是一个经验库整理专家。从用户的口语描述中提取工作经历，格式化为结构化的 Markdown。
 
 提取规则：
 1. 找出每段工作经历的：公司/项目名称、时间段、角色、技术栈、具体成就
@@ -161,6 +189,8 @@ EXPERIENCE_EXTRACTION_PROMPT = ChatPromptTemplate.from_messages([
 
 3. 不要编造任何用户没有提到的信息
 4. 如果用户描述不完整（缺时间/角色/技术栈），仍要输出已有信息，缺失字段留空
-5. 用中文输出"""),
-    ("human", "用户描述：\n\n{raw_text}"),
-])
+5. 用中文输出""",
+        ),
+        ("human", "用户描述：\n\n{raw_text}"),
+    ]
+)

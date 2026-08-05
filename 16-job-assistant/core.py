@@ -6,8 +6,9 @@ AI 简历生成器 - 核心基础设施
 """
 
 import logging
-import os, re, warnings
-from typing import List
+import os
+import re
+import warnings
 
 # 抑制依赖库的噪音警告
 warnings.filterwarnings("ignore", message=".*pkg_resources.*")
@@ -15,26 +16,23 @@ warnings.filterwarnings("ignore", message=".*Accessing.*__path__.*")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
-import jieba
-from dotenv import load_dotenv, find_dotenv
-
-from langchain_openai import ChatOpenAI
-from langchain_core.tools import tool
-
-from langchain_community.document_loaders import TextLoader, PyPDFLoader, Docx2txtLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain_core.documents import Document
-from rank_bm25 import BM25Okapi
-
 # ============================================================
 # 日志配置
 # ============================================================
-
 import atexit
 from logging.handlers import RotatingFileHandler
-from typing import Set
+from typing import ClassVar
+
+import jieba
+from dotenv import find_dotenv, load_dotenv
+from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
+from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
+from langchain_core.tools import tool
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_openai import ChatOpenAI
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from rank_bm25 import BM25Okapi
 
 logger = logging.getLogger(__name__)
 _log_initialized = False
@@ -43,7 +41,7 @@ _log_initialized = False
 class SensitiveFilter(logging.Filter):
     """日志敏感信息脱敏：API key、手机号、邮箱。"""
 
-    _patterns = [
+    _patterns: ClassVar[list[tuple[str, str]]] = [
         (r"sk-[a-zA-Z0-9_-]{20,}", "sk-***"),
         (r"1[3-9]\d{9}", "138****0000"),
         (r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", "***@***.***"),
@@ -93,10 +91,12 @@ def setup_logging() -> None:
     # 控制台 handler：WARNING+
     console = logging.StreamHandler()
     console.setLevel(logging.WARNING)
-    console.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)-5s] %(name)s: %(message)s",
-        datefmt="%m-%d %H:%M:%S",
-    ))
+    console.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)-5s] %(name)s: %(message)s",
+            datefmt="%m-%d %H:%M:%S",
+        )
+    )
     console.addFilter(SensitiveFilter())
     root.addHandler(console)
 
@@ -108,20 +108,30 @@ def setup_logging() -> None:
         encoding="utf-8",
     )
     file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)-5s] %(name)s:%(lineno)d %(funcName)s() — %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    ))
+    file_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)-5s] %(name)s:%(lineno)d %(funcName)s() — %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
     file_handler.addFilter(SensitiveFilter())
     root.addHandler(file_handler)
 
     # 第三方库静音
     _noisy_libs = [
-        "httpx", "httpcore", "urllib3",
-        "openai", "openai._base_client",
-        "langchain_core", "langchain", "langgraph",
-        "huggingface_hub", "transformers",
-        "filelock", "fsspec", "tqdm",
+        "httpx",
+        "httpcore",
+        "urllib3",
+        "openai",
+        "openai._base_client",
+        "langchain_core",
+        "langchain",
+        "langgraph",
+        "huggingface_hub",
+        "transformers",
+        "filelock",
+        "fsspec",
+        "tqdm",
     ]
     for name in _noisy_libs:
         logging.getLogger(name).setLevel(logging.WARNING)
@@ -154,6 +164,7 @@ llm = ChatOpenAI(
 
 _embeddings = None
 
+
 def get_embeddings():
     """获取 embedding 模型实例（单例模式，首次调用时下载）。"""
     global _embeddings
@@ -165,32 +176,126 @@ def get_embeddings():
         )
     return _embeddings
 
+
 # ============================================================
-# 全局向量库状态
-# TODO: FastAPI 阶段重构为类实例，消除模块级全局状态（#13 #14）
+# 检索服务（RetrievalService 类封装，替代模块级全局状态）
 # ============================================================
 
-_vectorstore = None
-_bm25_index = None
-_chunks_text: List[str] = []
-_chunks_metadata: List[dict] = []
 
-def set_vectorstore(vs, chunks):
-    """设置全局向量库实例，BM25 由 chunks 自动构建，保证三者永远一致。"""
-    global _vectorstore, _bm25_index, _chunks_text, _chunks_metadata
-    _vectorstore = vs
-    if chunks:
-        _chunks_text = [c.page_content for c in chunks]
-        _chunks_metadata = [c.metadata for c in chunks]
-        _bm25_index = BM25Okapi([jieba.lcut(c.page_content) for c in chunks])
-    else:
-        _chunks_text = []
-        _chunks_metadata = []
-        _bm25_index = None
+class RetrievalService:
+    """混合检索服务：FAISS 语义检索 + BM25 关键词检索 + RRF 融合。
+
+    持有向量库与关键词索引的全部状态（#10 重构：原模块级全局变量
+    _vectorstore/_bm25_index/_chunks_text/_chunks_metadata 收敛于此）。
+    实例化即建立完整双索引，不存在"忘了写入"的中间状态；
+    FastAPI 阶段可对每个请求注入独立实例（依赖注入）。
+    """
+
+    def __init__(self, vectorstore: object, chunks: list[Document]):
+        self._vectorstore = vectorstore
+        if chunks:
+            self._chunks_text = [c.page_content for c in chunks]
+            self._chunks_metadata = [c.metadata for c in chunks]
+            self._bm25_index = BM25Okapi([jieba.lcut(c.page_content) for c in chunks])
+        else:
+            self._chunks_text = []
+            self._chunks_metadata = []
+            self._bm25_index = None
+
+    @property
+    def is_ready(self) -> bool:
+        """双索引是否就绪（vectorstore + BM25）。"""
+        return self._vectorstore is not None and self._bm25_index is not None
+
+    @property
+    def chunk_count(self) -> int:
+        """已索引的文本块数量。"""
+        return len(self._chunks_text)
+
+    def search(self, query: str, k: int = 4, doc_types: list[str] | None = None) -> str:
+        """混合搜索：FAISS 语义 + BM25 关键词 → RRF 融合 → top-k。
+
+        返回格式：每块以 "[doc_type] " 开头，块间以 "\n\n---\n\n" 分隔。
+        """
+        if not self.is_ready:
+            return "尚未加载任何文档。"
+
+        # 防止空查询返回随机结果
+        if not query.strip():
+            return "未提供搜索词。"
+
+        # FAISS + BM25 各取 _fetch_k 条进入 RRF 融合，最后截断到 k
+        _fetch_k = max(k * 5, min(len(self._chunks_text), 20))
+        faiss_docs = self._vectorstore.similarity_search(query, k=_fetch_k)
+
+        # BM25 关键词检索（jieba 中文分词）
+        bm25_scores = self._bm25_index.get_scores(jieba.lcut(query))
+        if len(bm25_scores) > 0:
+            bm25_top_indices = sorted(
+                range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True
+            )[:_fetch_k]
+        else:
+            bm25_top_indices = []
+
+        # RRF 融合：Reciprocal Rank Fusion，k=60
+        # 用 chunk 索引做 key，避免字符串内容微小差异导致融合作废
+        K = 60
+        rrf_scores: dict[int, float] = {}  # chunk_index → 累计 RRF 得分
+
+        # FAISS 排名得分（用 _chunk_idx 元数据，避免字符串微小差异导致匹配失败）
+        for rank, doc in enumerate(faiss_docs):
+            idx = doc.metadata.get("_chunk_idx", -1)
+            if idx == -1 or idx >= len(self._chunks_text):
+                continue
+            rrf_scores[idx] = 1.0 / (K + rank)
+
+        # BM25 排名得分，与 FAISS 累加
+        for rank, idx in enumerate(bm25_top_indices):
+            score = 1.0 / (K + rank)
+            rrf_scores[idx] = rrf_scores.get(idx, 0.0) + score
+
+        # 按 RRF 得分降序排列，取 top-k（doc_types 过滤后再截断，不足 k 就返回少一些）
+        sorted_indices = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+        filtered_indices = [
+            (idx, score)
+            for idx, score in sorted_indices
+            if doc_types is None
+            or self._chunks_metadata[idx].get("doc_type") in doc_types
+        ][:k]
+
+        merged = []
+        for idx, _score in filtered_indices:
+            content = self._chunks_text[idx]
+            doc_type = self._chunks_metadata[idx].get("doc_type", "unknown")
+            merged.append(f"[{doc_type}] {content}")
+
+        if not merged:
+            return "未找到相关文档。"
+
+        return "\n\n---\n\n".join(merged)
+
+
+# 当前活跃检索服务（模块级指针）。FastAPI 阶段用依赖注入替换实例，
+# 但保留模块级注册表：Agent 的 @tool 包装（search_documents）与工作流
+# 直接调用（search_documents_impl）仍从这里读取当前实例。
+_retrieval_service: RetrievalService | None = None
+
+
+def set_retrieval_service(service: RetrievalService | None) -> None:
+    """注册/替换当前检索服务实例（None 表示清空）。"""
+    global _retrieval_service
+    _retrieval_service = service
+
+
+def get_retrieval_service() -> RetrievalService | None:
+    """获取当前检索服务实例（未注册时返回 None）。"""
+    return _retrieval_service
+
 
 # ============================================================
 # 文档处理
 # ============================================================
+
 
 def normalize_text(text: str) -> str:
     """文本规范化：修复 PDF/网页提取常见的格式问题。
@@ -211,11 +316,11 @@ def normalize_text(text: str) -> str:
         # 当前行或上一行是列表项 / 标题 → 保留独立换行
         # \s* 容忍 PDF 解析丢掉空格 / 全角空格（\s 已覆盖 U+3000）
         _list_re = (
-            r'^[-*•]\s*'                          # -item  *item  •item（含空格/全角空格）
-            r'|^\d+[.、)]\s*'                     # 1.item  1、item  1)item
-            r'|^（[一二三四五六七八九十\d]+）'      # （一）（1）
-            r'|^[一二三四五六七八九十]+[、．]'      # 一、item  二．item
-            r'|^#{1,6}\s'                         # ## heading（标题必须有空格）
+            r"^[-*•]\s*"  # -item  *item  •item（含空格/全角空格）
+            r"|^\d+[.、)]\s*"  # 1.item  1、item  1)item
+            r"|^（[一二三四五六七八九十\d]+）"  # （一）（1）
+            r"|^[一二三四五六七八九十]+[、．]"  # 一、item  二．item
+            r"|^#{1,6}\s"  # ## heading（标题必须有空格）
         )
         is_special = bool(re.match(_list_re, stripped))
         prev_is_special = bool(re.match(_list_re, prev_stripped))
@@ -250,7 +355,9 @@ def load_file_content(path: str) -> str:
     if not text.strip():
         ext = os.path.splitext(path)[1].lower()
         if ext == ".pdf":
-            raise ValueError("PDF 可能是扫描件，无法提取文字。请上传含文本的 PDF 或直接粘贴文字内容。")
+            raise ValueError(
+                "PDF 可能是扫描件，无法提取文字。请上传含文本的 PDF 或直接粘贴文字内容。"
+            )
         raise ValueError("文件内容为空，请检查后重新上传。")
     return text
 
@@ -262,7 +369,9 @@ def _load_file_to_documents(path: str) -> list[Document]:
     """加载文件为 LangChain Document 列表，自动检测 .txt / .pdf / .docx / .md。"""
     ext = os.path.splitext(path)[1].lower()
     if ext not in (".pdf", ".docx", ".txt", ".md", ""):
-        raise ValueError(f"不支持的文件格式：{ext}。支持的格式：.txt / .pdf / .docx / .md")
+        raise ValueError(
+            f"不支持的文件格式：{ext}。支持的格式：.txt / .pdf / .docx / .md"
+        )
 
     try:
         file_size = os.path.getsize(path)
@@ -284,22 +393,28 @@ def _load_file_to_documents(path: str) -> list[Document]:
         error_msg = str(e).lower()
         if "encrypt" in error_msg or "password" in error_msg:
             raise ValueError(f"文件已加密，无法读取：{os.path.basename(path)}") from e
-        elif "corrupt" in error_msg or "not a pdf" in error_msg or "not a valid" in error_msg:
+        elif (
+            "corrupt" in error_msg
+            or "not a pdf" in error_msg
+            or "not a valid" in error_msg
+        ):
             raise ValueError(f"文件已损坏或格式异常：{os.path.basename(path)}") from e
         else:
-            raise ValueError(f"文件读取失败（{os.path.basename(path)}）：{str(e)[:100]}") from e
+            raise ValueError(
+                f"文件读取失败（{os.path.basename(path)}）：{str(e)[:100]}"
+            ) from e
 
 
-def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple[object, list[Document]]:
-    # TODO: FastAPI 阶段自动调用 set_vectorstore()，消除调用方遗漏风险（#14）
-    """加载多类型文档，切分，建立 FAISS + BM25 双索引。
+def load_and_index_documents(file_paths: dict[str, list[str]]) -> RetrievalService:
+    """加载多类型文档，切分，建立 FAISS + BM25 双索引，注册为当前检索服务。
 
     参数：
         file_paths: {"doc_type": ["path1", "path2"], ...}
         例如：{"sample_resume": ["samples/xxx.txt"], "jd": ["jd_python.txt"]}
 
     返回：
-        (vectorstore, chunks)
+        RetrievalService 实例（已自动注册，search_documents 立即可用，
+        调用方无需再手动写入——#10 消除调用方遗漏风险）
     """
     if not file_paths:
         raise ValueError("未指定任何文档路径。")
@@ -317,7 +432,8 @@ def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple[object, 
         raise ValueError("所有文档均为空，无法建立索引。请检查文件内容。")
 
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500, chunk_overlap=100,
+        chunk_size=500,
+        chunk_overlap=100,
         separators=["\n\n", "。", "！", "？", "\n", "，", " ", ""],
     )
     chunks = splitter.split_documents(all_docs)
@@ -331,11 +447,15 @@ def load_and_index_documents(file_paths: dict[str, list[str]]) -> tuple[object, 
     embeddings = get_embeddings()
     vectorstore = FAISS.from_documents(chunks, embeddings)
 
-    return vectorstore, chunks
+    service = RetrievalService(vectorstore, chunks)
+    set_retrieval_service(service)
+    return service
+
 
 # ============================================================
 # 工具定义
 # ============================================================
+
 
 @tool
 def search_documents(query: str, k: int = 4, doc_types: list[str] | None = None) -> str:
@@ -350,76 +470,27 @@ def search_documents(query: str, k: int = 4, doc_types: list[str] | None = None)
     return search_documents_impl(query, k, doc_types)
 
 
-def search_documents_impl(query: str, k: int = 4, doc_types: list[str] | None = None) -> str:
+def search_documents_impl(
+    query: str, k: int = 4, doc_types: list[str] | None = None
+) -> str:
     """search_documents 的核心实现——普通函数，供工具包装和工作流直接调用。"""
-    if _vectorstore is None:
+    service = get_retrieval_service()
+    if service is None:
         return "尚未加载任何文档。"
-    if _bm25_index is None:
-        return "关键词索引不可用，请重新索引文档。"
+    return service.search(query, k, doc_types)
 
-    # 防止空查询返回随机结果
-    if not query.strip():
-        return "未提供搜索词。"
-
-    # FAISS + BM25 各取 _fetch_k 条进入 RRF 融合，最后截断到 k
-    _fetch_k = max(k * 5, min(len(_chunks_text), 20))
-    faiss_docs = _vectorstore.similarity_search(query, k=_fetch_k)
-
-    # BM25 关键词检索（jieba 中文分词）
-    bm25_scores = _bm25_index.get_scores(jieba.lcut(query))
-    if len(bm25_scores) > 0:
-        bm25_top_indices = sorted(
-            range(len(bm25_scores)),
-            key=lambda i: bm25_scores[i],
-            reverse=True
-        )[:_fetch_k]
-    else:
-        bm25_top_indices = []
-
-    # RRF 融合：Reciprocal Rank Fusion，k=60
-    # 用 chunk 索引做 key，避免字符串内容微小差异导致融合作废
-    K = 60
-    rrf_scores: dict[int, float] = {}  # chunk_index → 累计 RRF 得分
-
-    # FAISS 排名得分（用 _chunk_idx 元数据，避免字符串微小差异导致匹配失败）
-    for rank, doc in enumerate(faiss_docs):
-        idx = doc.metadata.get("_chunk_idx", -1)
-        if idx == -1 or idx >= len(_chunks_text):
-            continue
-        rrf_scores[idx] = 1.0 / (K + rank)
-
-    # BM25 排名得分，与 FAISS 累加
-    for rank, idx in enumerate(bm25_top_indices):
-        score = 1.0 / (K + rank)
-        rrf_scores[idx] = rrf_scores.get(idx, 0.0) + score
-
-    # 按 RRF 得分降序排列，取 top-k（doc_types 过滤后再截断，不足 k 就返回少一些）
-    sorted_indices = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
-    filtered_indices = [
-        (idx, score) for idx, score in sorted_indices
-        if doc_types is None or _chunks_metadata[idx].get("doc_type") in doc_types
-    ][:k]
-
-    merged = []
-    for idx, score in filtered_indices:
-        content = _chunks_text[idx]
-        doc_type = _chunks_metadata[idx].get("doc_type", "unknown")
-        merged.append(f"[{doc_type}] {content}")
-
-    if not merged:
-        return "未找到相关文档。"
-
-    return "\n\n---\n\n".join(merged)
 
 # ============================================================
 # Token 预算控制（基于 API 返回的真实 token 计数）
 # ============================================================
 
+
 class TokenBudget:
     """Token 预算跟踪器，从 API 响应的 usage_metadata 中提取真实 token 用量。
 
-    TODO: 后端阶段在 workflow 中实例化，接入 node_customize 的 token_usage 数据。
-    当前 _parse_usage 已被 _extract_agent_token_usage 复用，实例尚未创建。
+    实例在 workflow.node_customize 中按请求创建（每请求隔离，不做模块级共享），
+    记录 customize 阶段的 token_usage（core.py 的 _parse_usage 被
+    resume_engine._extract_agent_token_usage 复用）。
 
     注意：customize_for_jd 内部有重试逻辑，重试失败的尝试无法提取 token 用量
     （无 API 响应对象）。TokenBudget 只累积成功调用的数据，瞬时网络错误通常
@@ -445,11 +516,13 @@ class TokenBudget:
         if not usage:
             return 0, 0
         input_tokens = (
-            usage["prompt_tokens"] if "prompt_tokens" in usage
+            usage["prompt_tokens"]
+            if "prompt_tokens" in usage
             else usage.get("input_tokens", 0)
         )
         output_tokens = (
-            usage["completion_tokens"] if "completion_tokens" in usage
+            usage["completion_tokens"]
+            if "completion_tokens" in usage
             else usage.get("output_tokens", 0)
         )
         return input_tokens, output_tokens
@@ -490,6 +563,3 @@ class TokenBudget:
             f"Token 用量：输入 {self.input_tokens} + 输出 {self.output_tokens}"
             f" = {self.total_tokens} / {self.max_tokens}（{self.usage_ratio:.0%}）"
         )
-
-
-

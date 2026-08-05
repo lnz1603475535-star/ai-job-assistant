@@ -8,15 +8,17 @@
 运行：python terminal_test.py
 """
 
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from core import setup_logging
+
 setup_logging()
 
-import core
-from core import load_and_index_documents, set_vectorstore
-from workflow import run_workflow, resume_workflow, retrieve_experience_for_jd
+from core import load_and_index_documents
+from workflow import resume_workflow, retrieve_experience_for_jd, run_workflow
 
 # 使用项目自带的样例文件
 SAMPLE_DIR = os.path.join(os.path.dirname(__file__), "samples")
@@ -51,18 +53,21 @@ def test_workflow():
     sample_resume_path = os.path.join(SAMPLE_DIR, "resume_zhangsan.txt")
     jd_path = os.path.join(SAMPLE_DIR, "jd_python_senior.txt")
 
-    vs, chunks = load_and_index_documents({
-        "user_experience": [os.path.join(DATA_DIR, "experience_bank.md")],
-        "sample_resume": [sample_resume_path],
-        "jd": [jd_path],
-    })
-    set_vectorstore(vs, chunks)
-    print(f"  已索引 {len(chunks)} 个文本块")
-    print(f"  FAISS 索引：就绪 | BM25 索引：就绪")
+    service = load_and_index_documents(
+        {
+            "user_experience": [os.path.join(DATA_DIR, "experience_bank.md")],
+            "sample_resume": [sample_resume_path],
+            "jd": [jd_path],
+        }
+    )
+    print(f"  已索引 {service.chunk_count} 个文本块")
+    print("  FAISS 索引：就绪 | BM25 索引：就绪")
 
     # ── 第 2 步：运行工作流（在 check_parsed 后暂停）──
     print("\n" + "─" * 60)
-    print("[2/5] 运行工作流（validate_inputs → extract_style → extract_jd → parse_user → generate_base）...")
+    print(
+        "[2/5] 运行工作流（validate_inputs → extract_style → extract_jd → parse_user → generate_base）..."
+    )
     print("─" * 60)
 
     result = run_workflow(
@@ -75,7 +80,7 @@ def test_workflow():
 
     errors = result.get("errors", [])
     if errors:
-        print(f"\n  [ERROR] 工作流有错误：")
+        print("\n  [ERROR] 工作流有错误：")
         for e in errors:
             print(f"     - {e}")
         print("\n" + "=" * 60)
@@ -88,9 +93,11 @@ def test_workflow():
     jd_reqs = result.get("jd_requirements")
     base = result.get("base_resume", "")
 
-    print(f"\n  [OK] 输入验证通过")
+    print("\n  [OK] 输入验证通过")
     if user:
-        print(f"  [OK] parse_user：{user.name}，{len(user.skills)} 项技能，{len(user.experience)} 段经历")
+        print(
+            f"  [OK] parse_user：{user.name}，{len(user.skills)} 项技能，{len(user.experience)} 段经历"
+        )
     if style:
         fallback_tag = " ⚠️ 默认风格" if style.is_fallback else ""
         print(f"  [OK] extract_style：{style.structure[:50]}...{fallback_tag}")
@@ -130,14 +137,19 @@ def test_workflow():
         ("parse_user：经历已拆分", user is not None and len(user.experience) == 2),
         ("extract_style：结构非空", style is not None and len(style.structure) > 0),
         ("extract_jd：关键词已提取", jd_reqs is not None and len(jd_reqs.keywords) > 0),
-        ("extract_jd：必备要求已提取", jd_reqs is not None and len(jd_reqs.must_have) > 0),
+        (
+            "extract_jd：必备要求已提取",
+            jd_reqs is not None and len(jd_reqs.must_have) > 0,
+        ),
         ("generate_base：已生成", len(base) > 100),
         ("customize：已生成", len(customized) > 100),
         ("无 JD 定制失败通知", not any("JD 定制优化失败" in n for n in notifications)),
-        ("双索引就绪", vs is not None and core._bm25_index is not None),
+        ("双索引就绪", service is not None and service.is_ready),
         # 按需检索路径验证：纯本地 FAISS/BM25，零 LLM 调用（复用已提取的 jd_reqs）
-        ("按需检索：返回 user_experience 内容",
-         jd_reqs is not None and bool(retrieve_experience_for_jd(jd_reqs))),
+        (
+            "按需检索：返回 user_experience 内容",
+            jd_reqs is not None and bool(retrieve_experience_for_jd(jd_reqs)),
+        ),
     ]
 
     all_pass = True
@@ -159,18 +171,32 @@ def test_workflow():
     print("[5/5] 导出验证（PDF + Word）...")
     print("─" * 60)
 
-    from exporters import markdown_to_pdf_bytes, markdown_to_docx_bytes
+    from exporters import markdown_to_docx_bytes, markdown_to_pdf_bytes
 
     export_checks = []
 
     # PDF（bytes 类型必须校验：fpdf2 output() 返回 bytearray，
     # Streamlit download_button 不接受 bytearray——曾导致 Step 5 下载页崩溃）
     pdf_bytes, pdf_err = markdown_to_pdf_bytes(customized)
-    export_checks.append(("PDF 导出", pdf_err is None and isinstance(pdf_bytes, bytes) and len(pdf_bytes) > 1000, pdf_err))
+    export_checks.append(
+        (
+            "PDF 导出",
+            pdf_err is None and isinstance(pdf_bytes, bytes) and len(pdf_bytes) > 1000,
+            pdf_err,
+        )
+    )
 
     # Word
     docx_bytes, docx_err = markdown_to_docx_bytes(customized)
-    export_checks.append(("Word 导出", docx_err is None and isinstance(docx_bytes, bytes) and len(docx_bytes) > 1000, docx_err))
+    export_checks.append(
+        (
+            "Word 导出",
+            docx_err is None
+            and isinstance(docx_bytes, bytes)
+            and len(docx_bytes) > 1000,
+            docx_err,
+        )
+    )
 
     for desc, okay, err_msg in export_checks:
         status = "PASS" if okay else "FAIL"

@@ -1,0 +1,16 @@
+# 项目配置 —— AI 简历生成器（16-job-assistant）
+# ruff 风格统一仅作用于本项目目录；课程学习目录（01-15 课）不纳入。
+[project]
+name = "ai-job-assistant"
+version = "0.1.0"
+description = "AI 简历生成器：样本简历(风格) + 用户信息(内容) + JD(方向) → 定制简历"
+requires-python = ">=3.12"
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# BLE001（宽泛 except）忽略原因：项目约定——所有业务入口统一
+# `except Exception + logger.exception + 降级兜底`（见 troubleshooting 记录 #7），
+# 这是设计决策而非代码缺陷，故不在 lint 中报错。
+ignore = ["BLE001"]

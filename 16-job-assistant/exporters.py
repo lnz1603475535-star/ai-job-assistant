@@ -11,17 +11,17 @@ import logging
 import os
 import re
 from io import BytesIO
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from fpdf import FPDF as FPDFType
 
 try:
     import docx as _docx
-    from docx.shared import Pt as _Pt
-    from docx.shared import Cm as _Cm
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml.ns import qn as _qn
+    from docx.shared import Cm as _Cm
+    from docx.shared import Pt as _Pt
 except ImportError:
     _docx = None
     _Pt = None
@@ -39,23 +39,23 @@ logger = logging.getLogger(__name__)
 # TODO: Docker/Linux 部署阶段改为配置项或自动检测，Windows/Linux 字体路径不同
 _MSYH_FONT_PATH = "C:/Windows/Fonts/msyh.ttc"
 # PDF 页面设置
-_PDF_MARGIN_LR = 18       # 左右边距 mm
-_PDF_MARGIN_T = 0         # 上边距 mm（顶栏从 0 开始）
-_PDF_MARGIN_B = 12        # 下边距 mm
-_PDF_FONT_SIZE = 10.5     # 正文字号
-_PDF_FONT_SIZE_H1 = 18    # 姓名
-_PDF_FONT_SIZE_H2 = 13    # 章节标题
+_PDF_MARGIN_LR = 18  # 左右边距 mm
+_PDF_MARGIN_T = 0  # 上边距 mm（顶栏从 0 开始）
+_PDF_MARGIN_B = 12  # 下边距 mm
+_PDF_FONT_SIZE = 10.5  # 正文字号
+_PDF_FONT_SIZE_H1 = 18  # 姓名
+_PDF_FONT_SIZE_H2 = 13  # 章节标题
 _PDF_FONT_SIZE_H3 = 11.5  # 子标题
-_PDF_LINE_H = 5.5         # 行高 mm
+_PDF_LINE_H = 5.5  # 行高 mm
 
 # PDF 配色
-_PDF_ACCENT = (43, 87, 154)       # 深蓝 #2b579a
+_PDF_ACCENT = (43, 87, 154)  # 深蓝 #2b579a
 _PDF_ACCENT_LIGHT = (220, 230, 245)  # 浅蓝背景
-_PDF_TEXT_DARK = (50, 50, 50)     # 正文深灰
+_PDF_TEXT_DARK = (50, 50, 50)  # 正文深灰
 _PDF_TEXT_MEDIUM = (100, 100, 100)  # 次要文字
 
 # Word 页面设置
-_DOCX_MARGIN = 2.54       # 页边距 cm（1 英寸）
+_DOCX_MARGIN = 2.54  # 页边距 cm（1 英寸）
 
 # 照片尺寸（mm，标准一寸照比例）
 _PHOTO_W = 25
@@ -65,6 +65,7 @@ _PHOTO_H = 35
 # ============================================================
 # Markdown 行级解析
 # ============================================================
+
 
 def _is_h2(line: str) -> bool:
     """判断是否为二级标题 ## xxx"""
@@ -79,13 +80,15 @@ def _is_h3(line: str) -> bool:
 def _is_list_item(line: str) -> bool:
     """判断是否为列表项 - xxx 或 * xxx"""
     stripped = line.lstrip()
-    return stripped.startswith("- ") or stripped.startswith("* ")
+    return stripped.startswith(("- ", "* "))
 
 
 def _is_horizontal_rule(line: str) -> bool:
     """判断是否为分割线 --- 或 ***"""
     s = line.strip()
-    return s in ("---", "***", "___") or (len(s) >= 3 and all(c == s[0] for c in s) and s[0] in "-*_")
+    return s in ("---", "***", "___") or (
+        len(s) >= 3 and all(c == s[0] for c in s) and s[0] in "-*_"
+    )
 
 
 def _strip_inline_format(text: str) -> str:
@@ -138,9 +141,7 @@ def _strip_list_item_content(line: str, strip_inline: bool = True) -> str:
         "- *斜体内容*" → "*斜体内容*"
     """
     stripped = line.lstrip()
-    if stripped.startswith("- "):
-        content = stripped[2:].strip()
-    elif stripped.startswith("* "):
+    if stripped.startswith(("- ", "* ")):
         content = stripped[2:].strip()
     else:
         # 兜底：不是标准列表标记，返回原文
@@ -152,7 +153,8 @@ def _strip_list_item_content(line: str, strip_inline: bool = True) -> str:
 # PDF 导出（fpdf2）
 # ============================================================
 
-def _check_font() -> Tuple[bool, str]:
+
+def _check_font() -> tuple[bool, str]:
     """检查微软雅黑字体是否可用。"""
     if os.path.exists(_MSYH_FONT_PATH):
         return True, _MSYH_FONT_PATH
@@ -177,7 +179,12 @@ def _embed_photo(pdf: FPDFType, photo_path: str):
         pdf.image(photo_path, x=x, y=y, w=_PHOTO_W, h=_PHOTO_H)
     except Exception as e:
         # 加宽捕获：损坏/格式异常的图片可能抛解码类异常，一律跳过不阻断导出
-        logger.warning("照片嵌入失败（%s），将跳过：%s", photo_path, sanitize_error(e), exc_info=True)
+        logger.warning(
+            "照片嵌入失败（%s），将跳过：%s",
+            photo_path,
+            sanitize_error(e),
+            exc_info=True,
+        )
 
 
 def _add_pdf_top_bar(pdf: FPDFType, name: str, job_target: str = ""):
@@ -197,7 +204,9 @@ def _add_pdf_top_bar(pdf: FPDFType, name: str, job_target: str = ""):
         pdf.set_x(_PDF_MARGIN_LR)
         pdf.set_font("msyh", "", 10)
         pdf.set_text_color(180, 200, 230)
-        pdf.cell(0, 6, f"求职意向：{job_target}", new_x="LMARGIN", new_y="NEXT", align="L")
+        pdf.cell(
+            0, 6, f"求职意向：{job_target}", new_x="LMARGIN", new_y="NEXT", align="L"
+        )
     pdf.set_text_color(*_PDF_TEXT_DARK)
     pdf.set_y(bar_h + 4)
 
@@ -235,8 +244,9 @@ def _add_pdf_sub_header(pdf: FPDFType, title: str):
     pdf.ln(2)
 
 
-def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
-                         job_target: str = "") -> Tuple[Optional[bytes], Optional[str]]:
+def markdown_to_pdf_bytes(
+    md_text: str, photo_path: str | None = None, job_target: str = ""
+) -> tuple[bytes | None, str | None]:
     """将 Markdown 简历文本转换为 PDF bytes。
 
     Args:
@@ -347,7 +357,9 @@ def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
                 pdf.set_text_color(*_PDF_ACCENT)
                 pdf.cell(4, _PDF_LINE_H, bullet, new_x="RIGHT", new_y="TOP")
                 pdf.set_text_color(*_PDF_TEXT_DARK)
-                pdf.multi_cell(available_w, _PDF_LINE_H, content, new_x="LMARGIN", new_y="NEXT")
+                pdf.multi_cell(
+                    available_w, _PDF_LINE_H, content, new_x="LMARGIN", new_y="NEXT"
+                )
                 i += 1
                 continue
 
@@ -358,12 +370,24 @@ def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
             # 联系方式用紧凑格式
             if "@" in content or "|" in content or "电话" in content:
                 pdf.set_x(_PDF_MARGIN_LR)
-                pdf.cell(pdf.w - _PDF_MARGIN_LR * 2, _PDF_LINE_H, content,
-                        new_x="LMARGIN", new_y="NEXT", align="L")
+                pdf.cell(
+                    pdf.w - _PDF_MARGIN_LR * 2,
+                    _PDF_LINE_H,
+                    content,
+                    new_x="LMARGIN",
+                    new_y="NEXT",
+                    align="L",
+                )
             else:
                 pdf.set_text_color(*_PDF_TEXT_DARK)
-                pdf.multi_cell(pdf.w - _PDF_MARGIN_LR * 2, _PDF_LINE_H, content,
-                              new_x="LMARGIN", new_y="NEXT", align="L")
+                pdf.multi_cell(
+                    pdf.w - _PDF_MARGIN_LR * 2,
+                    _PDF_LINE_H,
+                    content,
+                    new_x="LMARGIN",
+                    new_y="NEXT",
+                    align="L",
+                )
             i += 1
 
         pdf_bytes = bytes(pdf.output())
@@ -425,7 +449,12 @@ def _docx_add_photo(doc, photo_path: str):
         run = para.add_run()
         run.add_picture(photo_path, width=_Cm(2.5), height=_Cm(3.5))
     except Exception as e:
-        logger.warning("Word 照片插入失败（%s），将跳过：%s", photo_path, sanitize_error(e), exc_info=True)
+        logger.warning(
+            "Word 照片插入失败（%s），将跳过：%s",
+            photo_path,
+            sanitize_error(e),
+            exc_info=True,
+        )
 
 
 def _docx_add_section_header(doc, title: str):
@@ -484,8 +513,9 @@ def _docx_add_sub_header(doc, title: str):
     run.font.name = "微软雅黑"
 
 
-def _docx_add_paragraph_with_format(doc, text: str, style: str | None = None,
-                                    left_indent_cm: float | None = None):
+def _docx_add_paragraph_with_format(
+    doc, text: str, style: str | None = None, left_indent_cm: float | None = None
+):
     """向 Word 文档添加段落，支持行内粗体/斜体格式。
 
     Args:
@@ -506,7 +536,7 @@ def _docx_add_paragraph_with_format(doc, text: str, style: str | None = None,
     pattern = re.compile(r"(\*{1,3})(.+?)\1")
     last_end = 0
     for match in pattern.finditer(text):
-        before = text[last_end:match.start()]
+        before = text[last_end : match.start()]
         if before:
             run = para.add_run(before)
             run.font.size = _Pt(11)
@@ -529,8 +559,9 @@ def _docx_add_paragraph_with_format(doc, text: str, style: str | None = None,
     return para
 
 
-def markdown_to_docx_bytes(md_text: str, job_target: str = "",
-                           photo_path: Optional[str] = None) -> Tuple[Optional[bytes], Optional[str]]:
+def markdown_to_docx_bytes(
+    md_text: str, job_target: str = "", photo_path: str | None = None
+) -> tuple[bytes | None, str | None]:
     """将 Markdown 简历文本转换为 Word (.docx) bytes。
 
     Args:
@@ -550,14 +581,17 @@ def markdown_to_docx_bytes(md_text: str, job_target: str = "",
         job_target = ""
 
     if _docx is None:
-        return None, "Word 生成失败：python-docx 库未安装，请运行 pip install python-docx。"
+        return (
+            None,
+            "Word 生成失败：python-docx 库未安装，请运行 pip install python-docx。",
+        )
 
     try:
         doc = _docx.Document()
 
         # 页面设置
         for section in doc.sections:
-            section.top_margin = _Cm(0)       # 顶栏从页面顶部开始
+            section.top_margin = _Cm(0)  # 顶栏从页面顶部开始
             section.bottom_margin = _Cm(_DOCX_MARGIN)
             section.left_margin = _Cm(_DOCX_MARGIN)
             section.right_margin = _Cm(_DOCX_MARGIN)
@@ -615,7 +649,8 @@ def markdown_to_docx_bytes(md_text: str, job_target: str = "",
                 indent = _count_leading_spaces(line)
                 content = _strip_list_item_content(line, strip_inline=False)
                 _docx_add_paragraph_with_format(
-                    doc, content,
+                    doc,
+                    content,
                     style="List Bullet",
                     left_indent_cm=1.27 + indent * 0.32,
                 )
@@ -645,6 +680,7 @@ def markdown_to_docx_bytes(md_text: str, job_target: str = "",
 # ============================================================
 # 辅助函数
 # ============================================================
+
 
 def sanitize_error(exc: Exception) -> str:
     """脱敏异常信息：替换用户目录路径，截断到 200 字符。"""
@@ -695,6 +731,7 @@ if __name__ == "__main__":
         print(f"  ❌ PDF 失败: {pdf_err}")
     else:
         import os
+
         out_path = os.path.join(os.path.dirname(__file__), "data", "_test_export.pdf")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         with open(out_path, "wb") as f:
@@ -708,6 +745,7 @@ if __name__ == "__main__":
         print(f"  ❌ Word 失败: {docx_err}")
     else:
         import os
+
         out_path = os.path.join(os.path.dirname(__file__), "data", "_test_export.docx")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         with open(out_path, "wb") as f:
