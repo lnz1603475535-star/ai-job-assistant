@@ -731,7 +731,7 @@ def _ensure_export_cache(result: dict):
 
     photo = st.session_state.get("user_photo_path")
     jd_reqs = result.get("jd_requirements")
-    job_target = jd_reqs.title if jd_reqs else ""
+    job_target = jd_reqs.title if jd_reqs and jd_reqs.title else ""  # 与 step_5 的 jd_title 守卫一致
 
     if st.session_state.export_customized_pdf is None and customized:
         pdf_bytes, pdf_err = markdown_to_pdf_bytes(customized, photo_path=photo, job_target=job_target)

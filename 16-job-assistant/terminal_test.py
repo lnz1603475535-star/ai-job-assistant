@@ -57,7 +57,7 @@ def test_workflow():
     print(f"  已索引 {len(chunks)} 个文本块")
     print(f"  FAISS 索引：就绪 | BM25 索引：就绪")
 
-    # ── 第 2 步：运行工作流（在 generate_base 后暂停）──
+    # ── 第 2 步：运行工作流（在 check_parsed 后暂停）──
     print("\n" + "─" * 60)
     print("[2/4] 运行工作流（validate_inputs → extract_style → extract_jd → parse_user → generate_base）...")
     print("─" * 60)

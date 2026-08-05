@@ -167,13 +167,16 @@ def _embed_photo(pdf: FPDFType, photo_path: str):
     """在 PDF 当前页右上角嵌入照片。
 
     照片尺寸 25×35mm（标准一寸），位置：右上角对齐页边距。
-    嵌入后光标保持在页面顶部，不影响后续文字排版。
+    注意：fpdf2 的 image 是纯绘制不占位，调用方需自行将正文
+    y 起点下移到照片底部以下（见 markdown_to_pdf_bytes），
+    否则正文会画在照片上。
     """
     x = pdf.w - _PDF_MARGIN_LR - _PHOTO_W
     y = _PDF_MARGIN_T
     try:
         pdf.image(photo_path, x=x, y=y, w=_PHOTO_W, h=_PHOTO_H)
-    except (OSError, RuntimeError) as e:
+    except Exception as e:
+        # 加宽捕获：损坏/格式异常的图片可能抛解码类异常，一律跳过不阻断导出
         logger.warning("照片嵌入失败（%s），将跳过：%s", photo_path, _sanitize_error(e), exc_info=True)
 
 
@@ -239,7 +242,7 @@ def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
     Args:
         md_text: Markdown 格式的简历文本。
         photo_path: 可选的照片文件路径（JPG/PNG），放置在首页右上角。
-        job_target: 可选，求职意向（如"Python 后端工程师"），显示在顶栏右侧。
+        job_target: 可选，求职意向（如"Python 后端工程师"），显示在顶栏姓名下方（靠左）。
 
     Returns:
         (pdf_bytes, None) 成功时； (None, error_message) 失败时。
@@ -250,7 +253,8 @@ def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
         return None, "简历内容为空，无法生成 PDF。"
 
     # 正文若已含求职意向（LLM 生成时可能已写入），顶栏不再重复添加
-    if re.search(r"求职意向", md_text):
+    # 宽匹配覆盖 LLM 措辞变体（求职意向/意向岗位/期望职位/目标岗位）
+    if re.search(r"求职意向|意向岗位|期望职位|目标岗位", md_text):
         job_target = ""
 
     # 检查字体
@@ -541,7 +545,8 @@ def markdown_to_docx_bytes(md_text: str, job_target: str = "",
         return None, "简历内容为空，无法生成 Word 文档。"
 
     # 正文若已含求职意向（LLM 生成时可能已写入），顶栏不再重复添加
-    if re.search(r"求职意向", md_text):
+    # 宽匹配覆盖 LLM 措辞变体（求职意向/意向岗位/期望职位/目标岗位）
+    if re.search(r"求职意向|意向岗位|期望职位|目标岗位", md_text):
         job_target = ""
 
     if _docx is None:

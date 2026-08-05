@@ -268,7 +268,7 @@ def build_workflow() -> CompiledStateGraph:
     graph.add_edge("check_parsed", "customize")
     graph.add_edge("customize", END)
 
-    # 编译：单例 checkpointer + generate_base 后暂停（人工审核断点）
+    # 编译：单例 checkpointer + check_parsed 后暂停（人工审核断点）
     _compiled_graph = graph.compile(
         checkpointer=get_checkpointer(),
         interrupt_after=["check_parsed"],
