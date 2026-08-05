@@ -26,7 +26,7 @@ from resume_engine import (
     get_last_token_usage,
     is_customize_failed,
 )
-from core import _search_documents_impl
+from core import search_documents_impl
 
 
 # MemorySaver 单例——断点恢复依赖同一实例跨请求保持状态
@@ -100,7 +100,7 @@ def node_extract_style(state: WorkflowState) -> dict[str, object]:
     return {"style_profile": result}
 
 
-def _retrieve_experience_for_jd(jd: JDRequirements) -> str:
+def retrieve_experience_for_jd(jd: JDRequirements) -> str:
     """按 JD 关键词从经验库检索相关经历段落（复用 search_documents 的 RRF 融合检索）。
 
     只检索 user_experience 类型，避免串入样本简历/JD 内容。
@@ -112,7 +112,7 @@ def _retrieve_experience_for_jd(jd: JDRequirements) -> str:
     if not query:
         return ""
     try:
-        result = _search_documents_impl(
+        result = search_documents_impl(
             query, k=_EXPERIENCE_RETRIEVE_K, doc_types=["user_experience"]
         )
     except Exception:
@@ -134,7 +134,7 @@ def node_parse_user(state: WorkflowState) -> dict[str, object]:
     context = user_text
     # 经验库超过阈值 → 按需检索（token 恒定 + 提取更精准）；否则直接用全文
     if jd and len(user_text) > _EXPERIENCE_FULL_TEXT_THRESHOLD:
-        retrieved = _retrieve_experience_for_jd(jd)
+        retrieved = retrieve_experience_for_jd(jd)
         if retrieved:
             context = retrieved
             logger.info(

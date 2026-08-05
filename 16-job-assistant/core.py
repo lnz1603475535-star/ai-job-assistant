@@ -347,10 +347,10 @@ def search_documents(query: str, k: int = 4, doc_types: list[str] | None = None)
         k：返回结果数量，默认 4
         doc_types：只返回指定文档类型（如 ["user_experience"]），None 返回全部类型
     """
-    return _search_documents_impl(query, k, doc_types)
+    return search_documents_impl(query, k, doc_types)
 
 
-def _search_documents_impl(query: str, k: int = 4, doc_types: list[str] | None = None) -> str:
+def search_documents_impl(query: str, k: int = 4, doc_types: list[str] | None = None) -> str:
     """search_documents 的核心实现——普通函数，供工具包装和工作流直接调用。"""
     if _vectorstore is None:
         return "尚未加载任何文档。"

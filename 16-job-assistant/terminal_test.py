@@ -16,7 +16,7 @@ setup_logging()
 
 import core
 from core import load_and_index_documents, set_vectorstore
-from workflow import run_workflow, resume_workflow, _retrieve_experience_for_jd
+from workflow import run_workflow, resume_workflow, retrieve_experience_for_jd
 
 # 使用项目自带的样例文件
 SAMPLE_DIR = os.path.join(os.path.dirname(__file__), "samples")
@@ -137,7 +137,7 @@ def test_workflow():
         ("双索引就绪", vs is not None and core._bm25_index is not None),
         # 按需检索路径验证：纯本地 FAISS/BM25，零 LLM 调用（复用已提取的 jd_reqs）
         ("按需检索：返回 user_experience 内容",
-         jd_reqs is not None and bool(_retrieve_experience_for_jd(jd_reqs))),
+         jd_reqs is not None and bool(retrieve_experience_for_jd(jd_reqs))),
     ]
 
     all_pass = True

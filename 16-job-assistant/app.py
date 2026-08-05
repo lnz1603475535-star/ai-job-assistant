@@ -24,7 +24,7 @@ from core import (
 from workflow import run_workflow, resume_workflow
 from prompts import EXPERIENCE_EXTRACTION_PROMPT
 from models import validate_experience_markdown
-from exporters import markdown_to_pdf_bytes, markdown_to_docx_bytes, _sanitize_error
+from exporters import markdown_to_pdf_bytes, markdown_to_docx_bytes, sanitize_error
 
 # ============================================================
 # 常量
@@ -65,7 +65,7 @@ def load_experience_bank() -> str:
             content = f.read()
         return content if content.strip() else "# 经验库\n\n在此粘贴你的项目经历。\n"
     except (UnicodeDecodeError, OSError, PermissionError) as e:
-        st.error(f"经验库文件读取失败：{_sanitize_error(e)}，请手动检查或删除 data/experience_bank.md")
+        st.error(f"经验库文件读取失败：{sanitize_error(e)}，请手动检查或删除 data/experience_bank.md")
         return "# 经验库\n\n在此粘贴你的项目经历。\n"
 
 
@@ -208,7 +208,7 @@ def index_documents_if_needed():
             st.session_state.index_error = None
             st.toast(f"✅ 已索引 {len(chunks)} 个文本块")
         except (UnicodeDecodeError, ValueError) as e:
-            logger.error("文档索引失败（编码/格式错误）：%s", _sanitize_error(e))
+            logger.error("文档索引失败（编码/格式错误）：%s", sanitize_error(e))
             error_str = str(e).lower()
             if "不存在" in error_str or "无法访问" in error_str or "not found" in error_str:
                 st.session_state.index_error = "missing"
@@ -222,7 +222,7 @@ def index_documents_if_needed():
                 st.session_state.index_error = "encoding"
             else:
                 st.session_state.index_error = "unknown"
-                st.session_state.index_error_detail = _sanitize_error(e)
+                st.session_state.index_error_detail = sanitize_error(e)
         except Exception as e:
             logger.exception("文档索引失败（未知错误）")
             error_str = str(e).lower()
@@ -232,7 +232,7 @@ def index_documents_if_needed():
                 st.session_state.index_error = "network"
             else:
                 st.session_state.index_error = "unknown"
-                st.session_state.index_error_detail = _sanitize_error(e)
+                st.session_state.index_error_detail = sanitize_error(e)
 
 
 def show_index_error():
@@ -634,7 +634,7 @@ def step_4_generate_preview():
                         elif "connect" in error_str or "network" in error_str or "refused" in error_str:
                             st.error("无法连接到 AI 服务，请检查网络连接后重试。")
                         else:
-                            st.error(f"JD 定制失败：{_sanitize_error(e)}")
+                            st.error(f"JD 定制失败：{sanitize_error(e)}")
         with c2:
             if st.button("🔄 放弃并重新生成", use_container_width=True):
                 _reset_workflow_state()
@@ -716,7 +716,7 @@ def step_4_generate_preview():
                 elif "connect" in error_str or "network" in error_str or "refused" in error_str:
                     st.error("无法连接到 AI 服务，请检查网络连接后重试。")
                 else:
-                    st.error(f"生成失败：{_sanitize_error(e)}")
+                    st.error(f"生成失败：{sanitize_error(e)}")
                 st.session_state.processing = False
 
 
@@ -938,7 +938,7 @@ def render_sidebar():
             except OSError:
                 st.error("保存失败：磁盘空间不足或文件系统错误，请检查后重试。")
             except Exception as e:
-                st.error(f"保存失败：{_sanitize_error(e)}")
+                st.error(f"保存失败：{sanitize_error(e)}")
 
         st.divider()
 
@@ -980,7 +980,7 @@ def render_sidebar():
                         elif "connect" in error_str or "network" in error_str:
                             st.error("无法连接到 AI 服务，请检查网络连接。")
                         else:
-                            st.error(f"提取失败：{_sanitize_error(e)}")
+                            st.error(f"提取失败：{sanitize_error(e)}")
 
         # 确认追加（用 st.text 避免溢出）
         if st.session_state.ai_extract_result:
@@ -1006,7 +1006,7 @@ def render_sidebar():
                     except OSError:
                         st.error("写入失败：磁盘空间不足或文件系统错误，请检查后重试。")
                     except Exception as e:
-                        st.error(f"写入失败：{_sanitize_error(e)}")
+                        st.error(f"写入失败：{sanitize_error(e)}")
             with c2:
                 if st.button("❌ 取消", use_container_width=True):
                     st.session_state.ai_extract_result = None

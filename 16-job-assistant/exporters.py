@@ -177,7 +177,7 @@ def _embed_photo(pdf: FPDFType, photo_path: str):
         pdf.image(photo_path, x=x, y=y, w=_PHOTO_W, h=_PHOTO_H)
     except Exception as e:
         # 加宽捕获：损坏/格式异常的图片可能抛解码类异常，一律跳过不阻断导出
-        logger.warning("照片嵌入失败（%s），将跳过：%s", photo_path, _sanitize_error(e), exc_info=True)
+        logger.warning("照片嵌入失败（%s），将跳过：%s", photo_path, sanitize_error(e), exc_info=True)
 
 
 def _add_pdf_top_bar(pdf: FPDFType, name: str, job_target: str = ""):
@@ -371,7 +371,7 @@ def markdown_to_pdf_bytes(md_text: str, photo_path: Optional[str] = None,
 
     except Exception as e:
         logger.exception("PDF 生成失败")
-        return None, f"PDF 生成失败：{_sanitize_error(e)}"
+        return None, f"PDF 生成失败：{sanitize_error(e)}"
 
 
 # ============================================================
@@ -425,7 +425,7 @@ def _docx_add_photo(doc, photo_path: str):
         run = para.add_run()
         run.add_picture(photo_path, width=_Cm(2.5), height=_Cm(3.5))
     except Exception as e:
-        logger.warning("Word 照片插入失败（%s），将跳过：%s", photo_path, _sanitize_error(e), exc_info=True)
+        logger.warning("Word 照片插入失败（%s），将跳过：%s", photo_path, sanitize_error(e), exc_info=True)
 
 
 def _docx_add_section_header(doc, title: str):
@@ -639,14 +639,14 @@ def markdown_to_docx_bytes(md_text: str, job_target: str = "",
 
     except Exception as e:
         logger.exception("Word 文档生成失败")
-        return None, f"Word 生成失败：{_sanitize_error(e)}"
+        return None, f"Word 生成失败：{sanitize_error(e)}"
 
 
 # ============================================================
 # 辅助函数
 # ============================================================
 
-def _sanitize_error(exc: Exception) -> str:
+def sanitize_error(exc: Exception) -> str:
     """脱敏异常信息：替换用户目录路径，截断到 200 字符。"""
     msg = str(exc)
     home = os.path.expanduser("~")
