@@ -250,6 +250,13 @@ def test_api():
     assert r.status_code == 422, "空简历应返回 422"
     print("  [OK] 参数校验：空简历 → 422")
 
+    r = client.post(
+        "/api/interview/chat",
+        json={"resume_text": data["customized_resume"], "question": " "},
+    )
+    assert r.status_code == 422, "空问题应返回 422"
+    print("  [OK] 参数校验：空问题 → 422")
+
     print("\n" + "=" * 60)
     print("  第 13 课 FastAPI 端点测试全部通过！")
     print("=" * 60)
