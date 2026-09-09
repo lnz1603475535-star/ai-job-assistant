@@ -1,3 +1,7 @@
+# python-docx 无类型存根（无 py.typed），docx.shared/docx.enum 等子模块的
+# 访问与调用被误报（67 条）。部署前统一补类型标注时重开以下规则逐一处理。
+# pyright: reportOptionalCall=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false
+
 """
 AI 简历生成器 - 导出模块（Round 5）
 ===================================
@@ -682,7 +686,7 @@ def markdown_to_docx_bytes(
 # ============================================================
 
 
-def sanitize_error(exc: Exception) -> str:
+def sanitize_error(exc: Exception | str) -> str:
     """脱敏异常信息：替换用户目录路径，截断到 200 字符。"""
     msg = str(exc)
     home = os.path.expanduser("~")
@@ -734,6 +738,7 @@ if __name__ == "__main__":
 
         out_path = os.path.join(os.path.dirname(__file__), "data", "_test_export.pdf")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        assert pdf_bytes is not None  # err 为空 ⇒ 必有内容（导出 API 契约）
         with open(out_path, "wb") as f:
             f.write(pdf_bytes)
         print(f"  ✅ PDF 生成成功 ({len(pdf_bytes)} bytes) → {out_path}")
@@ -748,6 +753,7 @@ if __name__ == "__main__":
 
         out_path = os.path.join(os.path.dirname(__file__), "data", "_test_export.docx")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        assert docx_bytes is not None  # err 为空 ⇒ 必有内容（导出 API 契约）
         with open(out_path, "wb") as f:
             f.write(docx_bytes)
         print(f"  ✅ Word 生成成功 ({len(docx_bytes)} bytes) → {out_path}")

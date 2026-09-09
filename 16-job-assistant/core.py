@@ -21,7 +21,7 @@ os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 # ============================================================
 import atexit
 from logging.handlers import RotatingFileHandler
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import jieba
 from dotenv import find_dotenv, load_dotenv
@@ -153,7 +153,7 @@ load_dotenv(find_dotenv())
 
 llm = ChatOpenAI(
     model="deepseek-v4-flash",
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
+    api_key=os.getenv("DEEPSEEK_API_KEY"),  # pyright: ignore[reportArgumentType]——stub 过严，运行时接受 str
     base_url=os.getenv("DEEPSEEK_BASE_URL"),
     temperature=0.3,
 )
@@ -191,7 +191,7 @@ class RetrievalService:
     FastAPI 阶段可对每个请求注入独立实例（依赖注入）。
     """
 
-    def __init__(self, vectorstore: object, chunks: list[Document]):
+    def __init__(self, vectorstore: Any, chunks: list[Document]):
         self._vectorstore = vectorstore
         if chunks:
             self._chunks_text = [c.page_content for c in chunks]
@@ -229,6 +229,7 @@ class RetrievalService:
         faiss_docs = self._vectorstore.similarity_search(query, k=_fetch_k)
 
         # BM25 关键词检索（jieba 中文分词）
+        assert self._bm25_index is not None  # is_ready 已保证（上方早退）
         bm25_scores = self._bm25_index.get_scores(jieba.lcut(query))
         if len(bm25_scores) > 0:
             bm25_top_indices = sorted(

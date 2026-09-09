@@ -1,3 +1,7 @@
+# WorkflowState 是 TypedDict(total=False)（LangGraph 惯例：节点只写部分键），
+# 直取键被误报为"可能不存在"；键存在性由图执行顺序保证。部署前补标注时重开。
+# pyright: reportTypedDictNotRequiredAccess=false
+
 """
 AI 简历生成器 — LangGraph 工作流
 =================================
@@ -10,10 +14,11 @@ import operator
 import os
 import time
 from collections.abc import Callable
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, TypedDict
 
 logger = logging.getLogger(__name__)
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -82,7 +87,7 @@ class WorkflowState(TypedDict, total=False):
 # ============================================================
 
 
-def node_validate_inputs(state: WorkflowState) -> dict[str, object]:
+def node_validate_inputs(state: WorkflowState) -> dict[str, Any]:
     """节点 1：验证输入。"""
     errors = []
 
@@ -101,7 +106,7 @@ def node_validate_inputs(state: WorkflowState) -> dict[str, object]:
     return {"errors": errors}
 
 
-def node_extract_style(state: WorkflowState) -> dict[str, object]:
+def node_extract_style(state: WorkflowState) -> dict[str, Any]:
     """节点 2：提取样本简历风格。"""
     result = extract_style(state["sample_resume_path"])
     return {"style_profile": result}
@@ -133,7 +138,7 @@ def retrieve_experience_for_jd(jd: JDRequirements) -> str:
     return result
 
 
-def node_parse_user(state: WorkflowState) -> dict[str, object]:
+def node_parse_user(state: WorkflowState) -> dict[str, Any]:
     """节点 4：解析用户信息。经验库较大时按 JD 关键词按需检索，只提取相关经历。"""
     user_text = state.get("user_text", "")
     jd = state.get("jd_requirements")
@@ -154,13 +159,13 @@ def node_parse_user(state: WorkflowState) -> dict[str, object]:
     return {"user_profile": result}
 
 
-def node_extract_jd(state: WorkflowState) -> dict[str, object]:
+def node_extract_jd(state: WorkflowState) -> dict[str, Any]:
     """节点 3：提取 JD 要求。"""
     result = extract_jd_requirements(state["jd_path"])
     return {"jd_requirements": result}
 
 
-def node_generate_base(state: WorkflowState) -> dict[str, object]:
+def node_generate_base(state: WorkflowState) -> dict[str, Any]:
     """节点 5：生成基础简历。"""
     result = generate_base_resume(
         state["user_profile"],
@@ -169,7 +174,7 @@ def node_generate_base(state: WorkflowState) -> dict[str, object]:
     return {"base_resume": result}
 
 
-def node_check_parsed(state: WorkflowState) -> dict[str, object]:
+def node_check_parsed(state: WorkflowState) -> dict[str, Any]:
     """节点 6：检查解析结果是否为空/默认值，追加提醒但不中断流程。"""
     notifications = []
 
@@ -200,7 +205,7 @@ def node_check_parsed(state: WorkflowState) -> dict[str, object]:
     return {"notifications": notifications}
 
 
-def node_customize(state: WorkflowState) -> dict[str, object]:
+def node_customize(state: WorkflowState) -> dict[str, Any]:
     """节点 7：JD 定制优化。"""
     # 短路保护：基础简历为空时不调用 LLM（省一次无效调用），直接标记跳过
     base_resume = state.get("base_resume", "")
@@ -266,7 +271,7 @@ def _timed_node(node_fn: Callable) -> Callable:
     图内节点名取 add_node 的 key，不受包装影响；日志带 [节点耗时] 标记便于 grep。
     """
 
-    def wrapper(state: WorkflowState) -> dict[str, object]:
+    def wrapper(state: WorkflowState) -> dict[str, Any]:
         start = time.perf_counter()
         try:
             return node_fn(state)
@@ -341,7 +346,7 @@ def run_workflow(
     jd_path: str,
     thread_id: str = "default",
     user_supplement: str = "",
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """运行工作流，在检查解析结果后暂停（interrupt_after=["check_parsed"]）。
 
     返回的 state 包含 base_resume 但不含 customized_resume。
@@ -359,7 +364,7 @@ def run_workflow(
         如果 validate_inputs 发现错误，直接返回错误 state（不暂停）
     """
     app = build_workflow()
-    config = {"configurable": {"thread_id": thread_id}}
+    config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
 
     initial_state = {
         "user_text": user_text,
@@ -379,7 +384,7 @@ def run_workflow(
     return result
 
 
-def resume_workflow(thread_id: str = "default") -> dict[str, object]:
+def resume_workflow(thread_id: str = "default") -> dict[str, Any]:
     """从 check_parsed 后的断点恢复执行，继续运行 customize。
 
     使用同一个 thread_id 以匹配 checkpoint。
@@ -394,7 +399,7 @@ def resume_workflow(thread_id: str = "default") -> dict[str, object]:
         RuntimeError：当前 thread_id 没有已保存的 checkpoint
     """
     app = build_workflow()
-    config = {"configurable": {"thread_id": thread_id}}
+    config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
 
     # 先查有没有 checkpoint，没有就直接报错，不盲调 invoke
     current_state = app.get_state(config)

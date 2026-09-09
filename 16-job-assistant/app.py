@@ -223,6 +223,8 @@ def _consume_customize_sse(task_id: str):
         if resp.status_code != 200:
             raise RuntimeError(f"SSE 连接失败：HTTP {resp.status_code}")
         for line in resp.iter_lines(decode_unicode=True):
+            if isinstance(line, bytes):
+                line = line.decode("utf-8")
             if not line or not line.startswith("data: "):
                 continue
             payload = json.loads(line[6:])
@@ -1167,7 +1169,7 @@ def render_sidebar():
         if st.button("💾 保存修改", use_container_width=True):
             try:
                 with open(EXP_BANK_PATH, "w", encoding="utf-8") as f:
-                    f.write(edited)
+                    f.write(edited or "")
                 st.session_state.exp_bank_content = edited
                 st.session_state.docs_indexed = False
                 st.toast("✅ 经验库已保存")
@@ -1200,7 +1202,10 @@ def render_sidebar():
                     try:
                         chain = EXPERIENCE_EXTRACTION_PROMPT | llm
                         result = chain.invoke({"raw_text": raw})
-                        st.session_state.ai_extract_result = result.content
+                        content = result.content
+                        st.session_state.ai_extract_result = (
+                            content if isinstance(content, str) else ""
+                        )
                         # 格式校验
                         is_valid, validation_msg = validate_experience_markdown(
                             st.session_state.ai_extract_result

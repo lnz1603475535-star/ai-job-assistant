@@ -22,11 +22,12 @@ import queue
 import tempfile
 import threading
 import uuid
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
 
 from core import llm, load_and_index_documents, setup_logging
@@ -295,7 +296,7 @@ class CustomizeTask:
 
     def __init__(self, thread_id: str):
         self.thread_id = thread_id
-        self.events: queue.Queue[tuple[str, object] | None] = queue.Queue()
+        self.events: queue.Queue[tuple[str, Any] | None] = queue.Queue()
         self.result: dict | None = None
         self.error: str | None = None
         self.done = False
@@ -310,7 +311,7 @@ _TOKEN_BATCH = 50
 
 def _get_workflow_state(thread_id: str):
     """读取工作流 checkpoint 状态（只读，不执行）。"""
-    config = {"configurable": {"thread_id": thread_id}}
+    config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
     return build_workflow().get_state(config)
 
 
@@ -376,7 +377,7 @@ def _run_customize_task(task_id: str, task: CustomizeTask) -> None:
         task.events.put(None)  # 哨兵：SSE 端点据此结束
 
 
-def _wait_task_event(task: CustomizeTask) -> tuple[str, object] | None:
+def _wait_task_event(task: CustomizeTask) -> tuple[str, Any] | None:
     """阻塞等待任务事件；任务已结束且队列空（哨兵）返回 None。"""
     while True:
         try:
@@ -440,7 +441,7 @@ async def stream_customize(task_id: str) -> StreamingResponse:
     if task is None:
         raise HTTPException(404, f"任务不存在：{task_id}")
 
-    def sse_event(event_name: str, payload: object) -> str:
+    def sse_event(event_name: str, payload: Any) -> str:
         return (
             f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
         )

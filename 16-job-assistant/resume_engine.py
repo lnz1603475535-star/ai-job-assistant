@@ -7,6 +7,7 @@ AI 简历生成器 - 引擎模块
 
 import logging
 from collections.abc import Iterator
+from typing import Any, cast
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
@@ -149,7 +150,8 @@ def generate_base_resume(user: UserProfile, style: StyleProfile) -> str:
                 "style_profile": style.model_dump_json(indent=2, ensure_ascii=False),
             }
         )
-        return result.content
+        content = result.content
+        return content if isinstance(content, str) else ""
     except Exception:
         logger.exception("基础简历生成失败")
         return ""
@@ -193,13 +195,15 @@ def customize_for_jd(
             result = agent.invoke({"messages": [user_message]})
 
             ai_messages = [
-                m for m in result["messages"] if isinstance(m, AIMessage) and m.content
+                m.content
+                for m in result["messages"]
+                if isinstance(m, AIMessage) and isinstance(m.content, str) and m.content
             ]
 
             token_usage = _extract_agent_token_usage(result["messages"])
 
             if ai_messages:
-                return ai_messages[-1].content, token_usage, False
+                return ai_messages[-1], token_usage, False
 
             # 空 AIMessage → 不重试（系统性问题，重试大概率还是空）
             logger.warning("Agent 未输出有效 AIMessage，降级返回 base_resume")
@@ -223,6 +227,9 @@ def customize_for_jd(
                     max_attempts,
                 )
                 return base_resume, {}, True
+
+    # 防御性兜底：循环内所有路径均已 return，此处实际不可达（满足静态检查）
+    return base_resume, {}, True
 
 
 def _build_customize_agent():
@@ -278,7 +285,7 @@ def stream_customize_for_jd(
     jd_reqs: JDRequirements,
     notifications: list[str] | None = None,
     user_supplement: str = "",
-) -> Iterator[tuple[str, object]]:
+) -> Iterator[tuple[str, Any]]:
     """流式 JD 定制：实时产出 token 片段。
 
     yield 事件：
@@ -311,7 +318,7 @@ def stream_customize_for_jd(
                     if content:
                         yield ("token", content)
             elif mode == "values":
-                final_messages = data.get("messages", [])
+                final_messages = cast(Any, data).get("messages", [])
 
         ai_messages = [
             m for m in final_messages if isinstance(m, AIMessage) and m.content
