@@ -8,8 +8,15 @@
 运行：python terminal_test.py
 """
 
+import io as _io
 import os
 import sys
+
+# 输出编码加固：Windows 控制台重定向到文件时默认 GBK+strict，
+# 遇到 ⚠️ 等非 GBK 字符会直接抛 UnicodeEncodeError 中断测试
+for _stream in (sys.stdout, sys.stderr):
+    if isinstance(_stream, _io.TextIOWrapper):
+        _stream.reconfigure(errors="replace")
 
 sys.path.insert(0, os.path.dirname(__file__))
 

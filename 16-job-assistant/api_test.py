@@ -8,9 +8,16 @@ FastAPI 端点终端测试 — 第 13 课
 运行：python api_test.py
 """
 
+import io as _io
 import json
 import os
 import sys
+
+# 输出编码加固：Windows 控制台重定向到文件时默认 GBK+strict，
+# 遇到 ⚠️ 等非 GBK 字符会直接抛 UnicodeEncodeError 中断测试
+for _stream in (sys.stdout, sys.stderr):
+    if isinstance(_stream, _io.TextIOWrapper):
+        _stream.reconfigure(errors="replace")
 
 sys.path.insert(0, os.path.dirname(__file__))
 
