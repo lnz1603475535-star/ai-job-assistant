@@ -9,10 +9,13 @@ AI 简历生成器 — LangGraph 工作流
 支持 MemorySaver 断点恢复。
 """
 
+import functools
 import logging
 import operator
 import os
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Annotated, Any, TypedDict
 
@@ -39,19 +42,51 @@ _checkpointer: MemorySaver | None = None
 # 编译后的工作流单例——同一实例跨请求保持 checkpoint 状态
 _compiled_graph: CompiledStateGraph | None = None
 
+# 惰性单例的初始化锁（并发首次调用会各建一份图/checkpointer）
+_init_lock = threading.Lock()
+
+# 已登记 thread 的 LRU（队首最旧）。MemorySaver 为每个 thread_id 永久保留
+# 全部 checkpoint——长跑进程不清理必然 OOM。超出上限时淘汰最旧的 thread
+# 并释放其 checkpoint。第 14 课换 PostgresSaver 后由数据库侧管理生命周期。
+# 注：多用户部署时需按并发会话数调大，或改为带 TTL 的存储。
+_MAX_TRACKED_THREADS = 50
+_tracked_threads: OrderedDict[str, None] = OrderedDict()
+_threads_lock = threading.Lock()
+
 
 def get_checkpointer() -> MemorySaver:
     """获取 MemorySaver 单例（首次调用时创建）。"""
     global _checkpointer
     if _checkpointer is None:
-        _checkpointer = MemorySaver()
+        with _init_lock:
+            if _checkpointer is None:
+                _checkpointer = MemorySaver()
     return _checkpointer
+
+
+def register_thread(thread_id: str) -> None:
+    """登记 thread_id；超出上限时淘汰最旧的 thread 及其 checkpoint。"""
+    with _threads_lock:
+        _tracked_threads[thread_id] = None
+        _tracked_threads.move_to_end(thread_id)
+        # thread_id 已在队尾，淘汰队首即可，不会误删本次要用的 thread
+        while len(_tracked_threads) > _MAX_TRACKED_THREADS:
+            oldest, _ = _tracked_threads.popitem(last=False)
+            try:
+                get_checkpointer().delete_thread(oldest)
+            except Exception:
+                logger.warning("淘汰 thread checkpoint 失败：%s", oldest, exc_info=True)
+            else:
+                logger.info("已淘汰最旧 thread 的 checkpoint：%s", oldest)
 
 
 # 经验库全文超过该字符数时启用按需检索（小于阈值直接喂全文，检索纯属多余）
 _EXPERIENCE_FULL_TEXT_THRESHOLD = 5000
 # 按需检索的候选块数（约 500 字符/块 ≈ 5000 字符输入，token 恒定不随库增长）
 _EXPERIENCE_RETRIEVE_K = 10
+# 经验库头部区（基本信息/技能）的保留上限——按行截断，不切碎字段
+_EXPERIENCE_HEAD_LINES = 25
+_EXPERIENCE_HEAD_CHARS = 800
 
 
 # ============================================================
@@ -138,8 +173,31 @@ def retrieve_experience_for_jd(jd: JDRequirements) -> str:
     return result
 
 
+def _experience_head(user_text: str) -> str:
+    """截取经验库头部区（姓名/联系方式/学历/技能所在段），按行截断不切碎字段。
+
+    头部区按约定置于经验库开头，与 USER_INFO_PARSE_PROMPT 的
+    "姓名从文本开头提取"一致。
+    """
+    head_lines: list[str] = []
+    used = 0
+    for line in user_text.splitlines()[:_EXPERIENCE_HEAD_LINES]:
+        if used + len(line) > _EXPERIENCE_HEAD_CHARS:
+            break
+        head_lines.append(line)
+        used += len(line) + 1
+    return "\n".join(head_lines).strip()
+
+
 def node_parse_user(state: WorkflowState) -> dict[str, Any]:
-    """节点 4：解析用户信息。经验库较大时按 JD 关键词按需检索，只提取相关经历。"""
+    """节点 4：解析用户信息。经验库较大时按 JD 关键词按需检索，只提取相关经历。
+
+    ⚠️ 检索结果只能替换"经历"部分，不能替换全文：检索用 JD 关键词做 query，
+    而姓名/邮箱/学历所在的基本信息段与 JD 关键词没有任何关键词交集，检索不到。
+    早期版本直接 context = retrieved，经验库一旦超过 5000 字符，UserProfile 的
+    name/contact/education 就会静默变空，简历丢掉姓名和学历。
+    故这里始终保留头部区（基本信息/技能），只对经历部分做按需检索。
+    """
     user_text = state.get("user_text", "")
     jd = state.get("jd_requirements")
 
@@ -148,10 +206,15 @@ def node_parse_user(state: WorkflowState) -> dict[str, Any]:
     if jd and len(user_text) > _EXPERIENCE_FULL_TEXT_THRESHOLD:
         retrieved = retrieve_experience_for_jd(jd)
         if retrieved:
-            context = retrieved
+            head = _experience_head(user_text)
+            context = (
+                f"{head}\n\n"
+                f"=== 与岗位相关的经历（已按 JD 关键词检索） ===\n{retrieved}"
+            )
             logger.info(
-                "按需检索：经验库 %d 字符 → 检索上下文 %d 字符",
+                "按需检索：经验库 %d 字符 → 头部区 %d 字符 + 检索上下文 %d 字符",
                 len(user_text),
+                len(head),
                 len(retrieved),
             )
 
@@ -230,12 +293,13 @@ def node_customize(state: WorkflowState) -> dict[str, Any]:
     if failed:
         notifications.append("⚠️ JD 定制优化失败，已使用基础简历代替")
 
-    # Token 预算：按请求实例化（不做模块级共享，多并发请求互不串数据）
-    budget = TokenBudget()
-    budget.record_from_response(token_usage)
-    warning = budget.get_warning()
-    if warning:
-        notifications.append(warning)
+    # 用量提示给用户看。预算对象由最终用量构造——面向模型的那份提醒
+    # 已由 TokenBudgetMiddleware 在生成过程中注入（过程控制在此处完成），
+    # 这里只是事后向用户展示同一份数据
+    budget = TokenBudget.from_usage(token_usage)
+    notice = budget.get_status_notice()
+    if notice:
+        notifications.append(notice)
     logger.info("customize token 用量：%s", budget.get_usage_report())
 
     return {
@@ -271,6 +335,7 @@ def _timed_node(node_fn: Callable) -> Callable:
     图内节点名取 add_node 的 key，不受包装影响；日志带 [节点耗时] 标记便于 grep。
     """
 
+    @functools.wraps(node_fn)
     def wrapper(state: WorkflowState) -> dict[str, Any]:
         start = time.perf_counter()
         try:
@@ -298,6 +363,18 @@ def build_workflow() -> CompiledStateGraph:
     if _compiled_graph is not None:
         return _compiled_graph
 
+    # 先取 checkpointer（它内部有同一把 _init_lock），再进临界区：
+    # threading.Lock 不可重入，嵌套获取会直接死锁（曾导致整个工作流卡死）
+    checkpointer = get_checkpointer()
+    with _init_lock:
+        if _compiled_graph is not None:  # 等锁期间可能已被别的线程编译好
+            return _compiled_graph
+        _compiled_graph = _compile_workflow(checkpointer)
+    return _compiled_graph
+
+
+def _compile_workflow(checkpointer: MemorySaver) -> CompiledStateGraph:
+    """构建并编译工作流图（调用方负责单例与加锁，checkpointer 由外部传入）。"""
     graph = StateGraph(WorkflowState)
 
     # 添加节点（_timed_node 包装：metrics 采集单节点耗时，图内名称不变）
@@ -328,11 +405,10 @@ def build_workflow() -> CompiledStateGraph:
     graph.add_edge("customize", END)
 
     # 编译：单例 checkpointer + check_parsed 后暂停（人工审核断点）
-    _compiled_graph = graph.compile(
-        checkpointer=get_checkpointer(),
+    return graph.compile(
+        checkpointer=checkpointer,
         interrupt_after=["check_parsed"],
     )
-    return _compiled_graph
 
 
 # ============================================================
@@ -365,6 +441,8 @@ def run_workflow(
     """
     app = build_workflow()
     config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+    # 登记 thread 并淘汰超限的旧 checkpoint（MemorySaver 永久保留，需主动回收）
+    register_thread(thread_id)
 
     initial_state = {
         "user_text": user_text,
