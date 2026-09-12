@@ -17,6 +17,8 @@ import re
 from io import BytesIO
 from typing import TYPE_CHECKING
 
+from core import sanitize_error
+
 if TYPE_CHECKING:
     from fpdf import FPDF as FPDFType
 
@@ -128,6 +130,47 @@ def _extract_resume_name(lines: list[str]) -> tuple[str, int]:
         if line.startswith("# "):
             return _strip_inline_format(line[2:].strip()), i
     return "", 0
+
+
+def _classify_line(line: str) -> tuple[str, str, int]:
+    """把一行 Markdown 归类：返回 (kind, 内容, 缩进空格数)。
+
+    kind 取值：blank / hr / h2 / h3 / list / text。
+
+    PDF 与 Word 两条导出路径共用同一套行判定规则——规则散落两处曾导致
+    "一边认标题、另一边不认"的不一致。列表项内容保留行内标记（**粗体**），
+    需要纯文本的渲染器自行调用 _strip_inline_format。
+    """
+    if not line.strip():
+        return "blank", "", 0
+    if _is_horizontal_rule(line):
+        return "hr", "", 0
+    if _is_h2(line):
+        return "h2", _strip_inline_format(line.lstrip("# ").strip()), 0
+    if _is_h3(line):
+        return "h3", _strip_inline_format(line.lstrip("# ").strip()), 0
+    if _is_list_item(line):
+        return (
+            "list",
+            _strip_list_item_content(line, strip_inline=False),
+            _count_leading_spaces(line),
+        )
+    return "text", line.strip(), 0
+
+
+# 求职意向的措辞变体（宽匹配覆盖 LLM 输出差异）
+_JOB_TARGET_RE = re.compile(r"求职意向|意向岗位|期望职位|目标岗位")
+# 只在简历头部若干行内检测求职意向
+_JOB_TARGET_SCAN_LINES = 12
+
+
+def _hides_job_target(lines: list[str]) -> bool:
+    """正文头部是否已写明求职意向（是则顶栏不再重复添加）。
+
+    只扫头部区域：正文任意位置出现这几个词（例如某条经历里写到
+    "了解目标岗位要求"）不应导致顶栏的求职意向整条消失。
+    """
+    return bool(_JOB_TARGET_RE.search("\n".join(lines[:_JOB_TARGET_SCAN_LINES])))
 
 
 def _strip_list_item_content(line: str, strip_inline: bool = True) -> str:
@@ -266,9 +309,10 @@ def markdown_to_pdf_bytes(
     if not md_text or not md_text.strip():
         return None, "简历内容为空，无法生成 PDF。"
 
-    # 正文若已含求职意向（LLM 生成时可能已写入），顶栏不再重复添加
-    # 宽匹配覆盖 LLM 措辞变体（求职意向/意向岗位/期望职位/目标岗位）
-    if re.search(r"求职意向|意向岗位|期望职位|目标岗位", md_text):
+    lines = md_text.strip().splitlines()
+
+    # 正文头部若已含求职意向（LLM 生成时可能已写入），顶栏不再重复添加
+    if _hides_job_target(lines):
         job_target = ""
 
     # 检查字体
@@ -299,8 +343,6 @@ def markdown_to_pdf_bytes(
         pdf.set_text_color(*_PDF_TEXT_DARK)
         pdf.set_draw_color(*_PDF_ACCENT)
 
-        lines = md_text.strip().splitlines()
-
         # 提取姓名（第一个 # 一级标题行），其余为正文
         name, name_idx = _extract_resume_name(lines)
         i = name_idx + 1 if name else 0
@@ -315,45 +357,25 @@ def markdown_to_pdf_bytes(
             # 避免正文（尤其联系方式行）画在照片上
             pdf.set_y(max(pdf.get_y(), _PDF_MARGIN_T + _PHOTO_H + 2))
 
-        # ── 第二遍：渲染正文 ──
+        # ── 渲染正文（行分类规则与 Word 导出共用 _classify_line）──
         while i < len(lines):
-            line = lines[i]
+            kind, content, indent = _classify_line(lines[i])
 
-            # 空行
-            if not line.strip():
+            if kind == "blank":
                 pdf.ln(_PDF_LINE_H * 0.6)
-                i += 1
-                continue
-
-            # 分割线
-            if _is_horizontal_rule(line):
+            elif kind == "hr":
                 pdf.ln(2)
                 y = pdf.get_y()
                 pdf.set_draw_color(*_PDF_ACCENT)
                 pdf.line(_PDF_MARGIN_LR, y, pdf.w - _PDF_MARGIN_LR, y)
                 pdf.ln(3)
-                i += 1
-                continue
-
-            # 二级标题
-            if _is_h2(line):
-                title = _strip_inline_format(line.lstrip("# ").strip())
-                _add_pdf_section_header(pdf, title)
-                i += 1
-                continue
-
-            # 三级标题
-            if _is_h3(line):
-                title = _strip_inline_format(line.lstrip("# ").strip())
-                _add_pdf_sub_header(pdf, title)
-                i += 1
-                continue
-
-            # 列表项
-            if _is_list_item(line):
-                indent = _count_leading_spaces(line)
+            elif kind == "h2":
+                _add_pdf_section_header(pdf, content)
+            elif kind == "h3":
+                _add_pdf_sub_header(pdf, content)
+            elif kind == "list":
                 pdf.set_font("msyh", "", _PDF_FONT_SIZE)
-                content = _strip_list_item_content(line)
+                text = _strip_inline_format(content)
                 x_offset = _PDF_MARGIN_LR + 4 + min(indent, 8) * 2.5
                 bullet = "•" if indent <= 2 else "–"
                 available_w = pdf.w - x_offset - _PDF_MARGIN_LR
@@ -362,36 +384,33 @@ def markdown_to_pdf_bytes(
                 pdf.cell(4, _PDF_LINE_H, bullet, new_x="RIGHT", new_y="TOP")
                 pdf.set_text_color(*_PDF_TEXT_DARK)
                 pdf.multi_cell(
-                    available_w, _PDF_LINE_H, content, new_x="LMARGIN", new_y="NEXT"
+                    available_w, _PDF_LINE_H, text, new_x="LMARGIN", new_y="NEXT"
                 )
-                i += 1
-                continue
-
-            # 普通段落（联系方式等）
-            pdf.set_font("msyh", "", _PDF_FONT_SIZE)
-            content = _strip_inline_format(line.strip())
-            pdf.set_text_color(*_PDF_TEXT_MEDIUM)
-            # 联系方式用紧凑格式
-            if "@" in content or "|" in content or "电话" in content:
-                pdf.set_x(_PDF_MARGIN_LR)
-                pdf.cell(
-                    pdf.w - _PDF_MARGIN_LR * 2,
-                    _PDF_LINE_H,
-                    content,
-                    new_x="LMARGIN",
-                    new_y="NEXT",
-                    align="L",
-                )
-            else:
-                pdf.set_text_color(*_PDF_TEXT_DARK)
-                pdf.multi_cell(
-                    pdf.w - _PDF_MARGIN_LR * 2,
-                    _PDF_LINE_H,
-                    content,
-                    new_x="LMARGIN",
-                    new_y="NEXT",
-                    align="L",
-                )
+            else:  # text：普通段落（联系方式等）
+                pdf.set_font("msyh", "", _PDF_FONT_SIZE)
+                text = _strip_inline_format(content)
+                pdf.set_text_color(*_PDF_TEXT_MEDIUM)
+                # 联系方式用紧凑格式
+                if "@" in text or "|" in text or "电话" in text:
+                    pdf.set_x(_PDF_MARGIN_LR)
+                    pdf.cell(
+                        pdf.w - _PDF_MARGIN_LR * 2,
+                        _PDF_LINE_H,
+                        text,
+                        new_x="LMARGIN",
+                        new_y="NEXT",
+                        align="L",
+                    )
+                else:
+                    pdf.set_text_color(*_PDF_TEXT_DARK)
+                    pdf.multi_cell(
+                        pdf.w - _PDF_MARGIN_LR * 2,
+                        _PDF_LINE_H,
+                        text,
+                        new_x="LMARGIN",
+                        new_y="NEXT",
+                        align="L",
+                    )
             i += 1
 
         pdf_bytes = bytes(pdf.output())
@@ -579,9 +598,10 @@ def markdown_to_docx_bytes(
     if not md_text or not md_text.strip():
         return None, "简历内容为空，无法生成 Word 文档。"
 
-    # 正文若已含求职意向（LLM 生成时可能已写入），顶栏不再重复添加
-    # 宽匹配覆盖 LLM 措辞变体（求职意向/意向岗位/期望职位/目标岗位）
-    if re.search(r"求职意向|意向岗位|期望职位|目标岗位", md_text):
+    lines = md_text.strip().splitlines()
+
+    # 正文头部若已含求职意向（LLM 生成时可能已写入），顶栏不再重复添加
+    if _hides_job_target(lines):
         job_target = ""
 
     if _docx is None:
@@ -607,8 +627,6 @@ def markdown_to_docx_bytes(
         style.paragraph_format.space_after = _Pt(4)
         style.paragraph_format.line_spacing = 1.5
 
-        lines = md_text.strip().splitlines()
-
         # 提取姓名（第一个 # 一级标题行），其余为正文
         name, name_idx = _extract_resume_name(lines)
         _docx_add_header_bar(doc, name, job_target)
@@ -617,58 +635,38 @@ def markdown_to_docx_bytes(
         if photo_path:
             _docx_add_photo(doc, photo_path)
 
-        # ── 渲染正文 ──
+        # ── 渲染正文（行分类规则与 PDF 导出共用 _classify_line）──
         i = name_idx + 1 if name else 0
         while i < len(lines):
-            line = lines[i]
+            kind, content, indent = _classify_line(lines[i])
 
-            if not line.strip():
+            if kind == "blank":
                 doc.add_paragraph("")
-                i += 1
-                continue
-
-            if _is_horizontal_rule(line):
+            elif kind == "hr":
                 hr_para = doc.add_paragraph()
                 hr_para.paragraph_format.space_before = _Pt(6)
                 hr_para.paragraph_format.space_after = _Pt(6)
                 run = hr_para.add_run("─" * 60)
                 run.font.size = _Pt(8)
                 run.font.color.rgb = _docx.shared.RGBColor(0xCC, 0xCC, 0xCC)
-                i += 1
-                continue
-
-            if _is_h2(line):
-                title = _strip_inline_format(line.lstrip("# ").strip())
-                _docx_add_section_header(doc, title)
-                i += 1
-                continue
-
-            if _is_h3(line):
-                title = _strip_inline_format(line.lstrip("# ").strip())
-                _docx_add_sub_header(doc, title)
-                i += 1
-                continue
-
-            if _is_list_item(line):
-                indent = _count_leading_spaces(line)
-                content = _strip_list_item_content(line, strip_inline=False)
+            elif kind == "h2":
+                _docx_add_section_header(doc, content)
+            elif kind == "h3":
+                _docx_add_sub_header(doc, content)
+            elif kind == "list":
                 _docx_add_paragraph_with_format(
                     doc,
                     content,
                     style="List Bullet",
                     left_indent_cm=1.27 + indent * 0.32,
                 )
-                i += 1
-                continue
-
-            # 普通段落（联系方式等）
-            content = line.strip()
-            para = _docx_add_paragraph_with_format(doc, content)
-            # 联系方式用灰色
-            if "@" in content or "|" in content or "电话" in content:
-                for run in para.runs:
-                    run.font.color.rgb = _docx.shared.RGBColor(0x66, 0x66, 0x66)
-                para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            else:  # text：普通段落（联系方式等）
+                para = _docx_add_paragraph_with_format(doc, content)
+                # 联系方式用灰色
+                if "@" in content or "|" in content or "电话" in content:
+                    for run in para.runs:
+                        run.font.color.rgb = _docx.shared.RGBColor(0x66, 0x66, 0x66)
+                    para.alignment = WD_ALIGN_PARAGRAPH.LEFT
             i += 1
 
         buf = BytesIO()
@@ -679,20 +677,6 @@ def markdown_to_docx_bytes(
     except Exception as e:
         logger.exception("Word 文档生成失败")
         return None, f"Word 生成失败：{sanitize_error(e)}"
-
-
-# ============================================================
-# 辅助函数
-# ============================================================
-
-
-def sanitize_error(exc: Exception | str) -> str:
-    """脱敏异常信息：替换用户目录路径，截断到 200 字符。"""
-    msg = str(exc)
-    home = os.path.expanduser("~")
-    if home and home != "~":
-        msg = msg.replace(home, "~")
-    return msg[:200]
 
 
 # ============================================================
