@@ -6,6 +6,7 @@ AI 简历生成器 — Streamlit UI (Round 4)
 技术栈：LangChain | LangGraph | DeepSeek | FAISS | BM25 | jieba | Streamlit
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -13,6 +14,8 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Iterable, Iterator
+from typing import Any
 
 import requests as http_requests
 import streamlit as st
@@ -22,12 +25,14 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.dirname(__file__))
 
 from core import (
+    EXPERIENCE_BANK_PATH,
     llm,
     load_and_index_documents,
     load_file_content,
+    sanitize_error,
     setup_logging,
 )
-from exporters import markdown_to_docx_bytes, markdown_to_pdf_bytes, sanitize_error
+from exporters import markdown_to_docx_bytes, markdown_to_pdf_bytes
 from models import validate_experience_markdown
 from prompts import EXPERIENCE_EXTRACTION_PROMPT
 from workflow import resume_workflow, run_workflow
@@ -37,8 +42,8 @@ from workflow import resume_workflow, run_workflow
 # ============================================================
 
 SAMPLE_DIR = os.path.join(os.path.dirname(__file__), "samples")
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-EXP_BANK_PATH = os.path.join(DATA_DIR, "experience_bank.md")
+# 经验库路径由 core 统一提供（app/api 共用一份定义，避免改一处漏一处）
+EXP_BANK_PATH = EXPERIENCE_BANK_PATH
 
 # 后端 API 地址（FastAPI，uvicorn api:app 启动；第 13 课起 UI 优先走后端）
 API_BASE = os.getenv("AI_JOB_API_BASE", "http://127.0.0.1:8000")
@@ -115,6 +120,9 @@ def initialize_session_state():
         "export_customized_pdf": None,
         "export_customized_docx": None,
         "user_photo_path": None,
+        "_stream_task_id": None,  # 未消费完的后端定制任务（断线重连时复用）
+        "_stream_result": None,
+        "upload_cache": {},  # {前缀: (文件指纹, 已落盘路径)}——避免每次 rerun 重写文件
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -128,6 +136,10 @@ def save_uploaded_file(uploaded_file, prefix: str = "upload") -> tuple[str, str 
     """保存上传文件到临时目录，返回 (路径, 错误消息)。
     成功时路径有效、错误为 None；失败时路径为空、错误为用户可读的提示。
     支持 .txt / .pdf / .docx / .md 格式。
+
+    同一份文件不重复落盘：Streamlit 每次交互都会重跑整个脚本，
+    早期实现每次都新生成 uuid 文件名再写一份，旧文件无人清理，
+    用几次就能在临时目录堆出大量孤儿文件。
     """
     try:
         content = uploaded_file.getvalue()
@@ -136,6 +148,12 @@ def save_uploaded_file(uploaded_file, prefix: str = "upload") -> tuple[str, str 
 
     if len(content) == 0:
         return "", "文件内容为空，请检查后重新上传。"
+
+    cache = st.session_state.setdefault("upload_cache", {})
+    signature = (uploaded_file.name, len(content), hashlib.md5(content).hexdigest())
+    cached = cache.get(prefix)
+    if cached and cached[0] == signature and os.path.exists(cached[1]):
+        return cached[1], None  # 内容未变，复用已落盘的文件
 
     suffix = os.path.splitext(uploaded_file.name)[1]
     if not suffix or suffix == ".":  # 无扩展名或只有点 → 默认 txt
@@ -149,6 +167,13 @@ def save_uploaded_file(uploaded_file, prefix: str = "upload") -> tuple[str, str 
     except (OSError, PermissionError):
         return "", "文件保存失败，请检查磁盘空间或临时目录权限后重试。"
 
+    # 换了文件才删除上一份，避免临时目录堆积
+    if cached and cached[1] != path:
+        try:
+            os.remove(cached[1])
+        except OSError:
+            logger.debug("旧上传文件清理失败（可忽略）：%s", cached[1])
+    cache[prefix] = (signature, path)
     return path, None
 
 
@@ -204,6 +229,10 @@ def _reset_workflow_state() -> None:
     st.session_state.paused_result = None
     st.session_state.processing = False
     st.session_state.session_id = str(uuid.uuid4())
+    # 清除未消费的后端任务：旧 task_id 对应的结果属于上一次生成，
+    # 留着会被复用，把上一份简历当成本次结果返回
+    st.session_state._stream_task_id = None
+    st.session_state._stream_result = None
     # 清除导出缓存（重新生成简历后需要重新导出）
     st.session_state.export_base_pdf = None
     st.session_state.export_base_docx = None
@@ -212,22 +241,44 @@ def _reset_workflow_state() -> None:
     # 注意：user_photo_path 不清除——用户不希望重新上传照片
 
 
+def _parse_sse_lines(lines: Iterable[Any]) -> Iterator[tuple[str, Any]]:
+    """解析 SSE 行流，产出 (事件名, 载荷)。纯函数，便于单测（见 regression_test.py）。
+
+    SSE 规范：`event: xxx` 行指定事件名（缺省为 message），`data: xxx` 行
+    是载荷，空行表示一个事件结束。早期实现只看 `data:` 而不看 `event:`，
+    导致后端的 error 事件被当成普通载荷静默丢弃。
+    """
+    event_name = ""
+    for raw in lines:
+        line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+        if not line:
+            event_name = ""  # 空行 = 事件边界，重置事件名
+            continue
+        if line.startswith("event: "):
+            event_name = line[7:].strip()
+        elif line.startswith("data: "):
+            try:
+                payload = json.loads(line[6:])
+            except json.JSONDecodeError:
+                logger.warning("SSE 事件载荷无法解析，已跳过：%s", line[:120])
+                continue
+            yield event_name, payload
+
+
 def _consume_customize_sse(task_id: str):
     """消费后端定制 SSE 流，yield 文本块给 st.write_stream 实时展示。
 
     事件格式对齐 LangGraph messages/partial 标准（见 api.py）；
-    done 事件的结果写入 session_state["_stream_result"]。
+    done 事件的结果写入 session_state["_stream_result"]；
+    后端 error 事件直接抛错，由调用方转本地兜底。
     """
     url = f"{API_BASE}/api/resume/customize/stream/{task_id}"
     with http_requests.get(url, stream=True, timeout=(10, 300)) as resp:
         if resp.status_code != 200:
             raise RuntimeError(f"SSE 连接失败：HTTP {resp.status_code}")
-        for line in resp.iter_lines(decode_unicode=True):
-            if isinstance(line, bytes):
-                line = line.decode("utf-8")
-            if not line or not line.startswith("data: "):
-                continue
-            payload = json.loads(line[6:])
+        for event_name, payload in _parse_sse_lines(resp.iter_lines(decode_unicode=True)):
+            if event_name == "error":
+                raise RuntimeError(f"后端定制任务失败：{payload.get('detail', '')}")
             if "messages" in payload:
                 for m in payload["messages"]:
                     content = m.get("content", "")
@@ -241,6 +292,7 @@ def _poll_stream_result(task_id: str, timeout: int = 240) -> dict:
     """轮询流式定制任务结果（SSE 断开后的兜底路径）。
 
     任务在后端后台线程执行，不依赖前端连接——前端中断不影响任务。
+    任务已结束但无结果（失败）时立即报错，不再空等到超时。
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -249,18 +301,88 @@ def _poll_stream_result(task_id: str, timeout: int = 240) -> dict:
         )
         if r.status_code == 200:
             data = r.json()
-            if data["status"] == "done" and data["result"] is not None:
-                return data["result"]
+            if data["status"] == "done":
+                if data["result"] is not None:
+                    return data["result"]
+                # 任务已结束但结果是空的 = 失败，立即上报（原实现会一直轮询
+                # 到超时，用户白等 4 分钟才看到错误）
+                raise RuntimeError(
+                    f"后端定制任务失败：{data.get('error') or '任务未产出结果'}"
+                )
         time.sleep(2)
     raise TimeoutError(f"等待定制结果超时（task={task_id}）")
+
+
+def _generate_via_api(
+    user_text: str,
+    sample_resume_path: str,
+    jd_path: str,
+    user_supplement: str,
+) -> dict | None:
+    """通过后端 API 生成基础简历（方案 B：checkpoint 留在后端进程）。
+
+    后端不可用 / 返回异常 → 返回 None，调用方回退本地执行（run_workflow）。
+
+    ⚠️ 为什么生成也必须走后端：checkpoint 存在进程内存里。若生成在
+    Streamlit 进程跑、定制却请求后端，后端找不到该 thread_id 会返回 404
+    （"工作流状态丢失"）。生成与定制必须落在同一个进程。
+    """
+    with (
+        open(sample_resume_path, "rb") as f_sample,
+        open(jd_path, "rb") as f_jd,
+    ):
+        r = http_requests.post(
+            f"{API_BASE}/api/resume/generate",
+            data={"user_text": user_text, "user_supplement": user_supplement},
+            files={
+                "sample_resume": (
+                    os.path.basename(sample_resume_path),
+                    f_sample,
+                    "text/plain",
+                ),
+                "jd": (os.path.basename(jd_path), f_jd, "text/plain"),
+            },
+            timeout=(10, 600),
+        )
+    r.raise_for_status()
+    return r.json()
+
+
+def _merge_customize_result(done: dict, paused: dict | None) -> dict:
+    """把后端返回的定制结果与暂停时的上下文合并成完整的 workflow_result。
+
+    后端只回定制结果（customized_resume / token_usage），而 Step 4/5 还要展示
+    基础简历与解析摘要；本地路径的 resume_workflow 返回的是**完整 state**。
+    两条路径必须同构，否则走 API 定制成功后基础简历会显示为空。
+
+    刻意不带 _interrupted：定制已完成，不该再提示"未经人工审核"。
+    """
+    context = paused or {}
+    return {
+        **{
+            key: context.get(key)
+            for key in (
+                "base_resume",
+                "user_profile",
+                "style_profile",
+                "jd_requirements",
+            )
+        },
+        "customized_resume": done["customized_resume"],
+        "token_usage": done.get("token_usage", {}),
+        "notifications": (
+            ["⚠️ JD 定制优化失败，已使用基础简历代替"] if done.get("failed") else []
+        ),
+    }
 
 
 def _customize_via_api() -> dict | None:
     """通过后端 API 完成 JD 定制（异步提交 + SSE 流式 + 轮询兜底）。
 
-    返回定制结果 dict（与 workflow result 同构）；
-    后端不可用/连接失败 → 返回 None，调用方回退本地执行；
-    checkpoint 丢失（后端 404）→ 抛 RuntimeError("checkpoint_lost")。
+    返回定制结果 dict（与 workflow result 同构）；**任何一步失败都返回 None**，
+    由调用方回退本地执行——包括后端返回 404（checkpoint 不在后端进程）：
+    那种情况下本地进程通常还留着 checkpoint，直接本地恢复即可，
+    不该像早期实现那样直接报"工作流状态丢失"。
 
     复用未完成的 task_id：前端中断后任务仍在后台执行，重新点击时
     直接轮询结果而非重复提交（避免重复 LLM 调用扣费）。
@@ -274,37 +396,102 @@ def _customize_via_api() -> dict | None:
                 timeout=10,
             )
             if r.status_code == 404:
-                raise RuntimeError("checkpoint_lost")
+                logger.info("后端无该 thread 的 checkpoint，转本地恢复")
+                return None
             r.raise_for_status()
             task_id = r.json()["task_id"]
             st.session_state._stream_task_id = task_id
 
         st.session_state._stream_result = None
         st.write("🤖 **AI 正在根据 JD 定制简历...**")
-        st.write_stream(_consume_customize_sse(task_id))
+        try:
+            st.write_stream(_consume_customize_sse(task_id))
+        except Exception as e:
+            # 流中断不影响后端任务（后台线程独立于 HTTP 连接），转轮询兜底
+            logger.warning("SSE 流中断，转轮询任务结果：%s", sanitize_error(e))
 
         done = st.session_state.get("_stream_result")
         if done is None:
-            # SSE 意外断开 → 任务在后台继续，轮询结果兜底
-            logger.warning("SSE 流中断，转轮询任务结果：task=%s", task_id)
             done = _poll_stream_result(task_id)
 
         st.session_state._stream_task_id = None
-        return {
-            "customized_resume": done["customized_resume"],
-            "token_usage": done.get("token_usage", {}),
-            "notifications": (
-                ["⚠️ JD 定制优化失败，已使用基础简历代替"] if done.get("failed") else []
-            ),
-        }
-    except RuntimeError as e:
-        if str(e) == "checkpoint_lost":
-            raise
-        logger.warning("后端 API 定制失败，回退本地执行：%s", sanitize_error(e))
+        # 与 _render_review_paused 口径一致：paused_result 缺失是异常状态，
+        # 不能像 _merge_customize_result 内部那样静默降级成"基础简历为空"
+        # ——宁可返回 None 走本地回退，最终得到响亮的"工作流状态丢失"
+        paused = st.session_state.get("paused_result")
+        if paused is None:
+            logger.warning("paused_result 缺失，无法合并上下文，转本地恢复")
+            return None
+        return _merge_customize_result(done, paused)
+    except (
+        http_requests.RequestException,
+        TimeoutError,
+        RuntimeError,
+        json.JSONDecodeError,
+        KeyError,
+    ) as e:
+        logger.warning("后端 API 定制不可用，回退本地执行：%s", sanitize_error(e))
         return None
-    except (http_requests.RequestException, TimeoutError, json.JSONDecodeError) as e:
-        logger.warning("后端 API 不可用，回退本地执行：%s", sanitize_error(e))
-        return None
+
+
+# 索引错误码 → 用户可读文案。键集合必须与 _classify_index_error 的返回值
+# 一一对应（regression_test 里有守卫断言），否则新错误码会静默掉进 unknown。
+# unknown 的文案在 show_index_error 里动态拼 index_error_detail。
+_INDEX_ERROR_MESSAGES = {
+    "encoding": "文件编码不支持，请确保上传的是 UTF-8 编码的 .txt 文件。",
+    "missing": "文件已被移动或删除，请回到前几步重新选择。",
+    "empty": "文件内容为空，请检查后重新选择。",
+    "network": "首次使用需下载模型（约 400MB），请检查网络连接后重试。",
+    "pdf_encrypted": "PDF 文件已加密，请先解密为普通 PDF 后重新上传。",
+    "pdf_scanned": "PDF 可能是扫描件，无法提取文字。请上传含文本的 PDF 或使用 OCR 工具转换。",
+    "pdf_corrupted": "PDF 文件已损坏或格式异常，请检查后重新上传。",
+    # unknown 的文案在 show_index_error 里追加 index_error_detail（表格保持纯字符串）
+    "unknown": "索引失败：",
+}
+
+
+def _classify_index_error(exc: Exception) -> str:
+    """把索引异常归类为 index_error 码（纯函数，便于单测）。
+
+    判据只看**异常文本**，不依赖异常的具体类型。早期实现在两个 except 块里
+    各写一条 if/elif 链（ValueError 一条、Exception 一条），等于"用哪个错误码"
+    取决于异常是哪个类——一旦某处抛出的类型变了，错误码会静默从 missing
+    掉成 unknown。合并后由内容决定。
+
+    返回的码与 show_index_error() 的文案表一一对应。
+    """
+    error_str = str(exc).lower()
+    if "不存在" in error_str or "无法访问" in error_str or "not found" in error_str:
+        return "missing"
+    if "加密" in error_str or "encrypt" in error_str or "密码" in error_str:
+        return "pdf_encrypted"
+    if "扫描" in error_str or "scan" in error_str:
+        return "pdf_scanned"
+    if "损坏" in error_str or "corrupt" in error_str:
+        return "pdf_corrupted"
+    # UnicodeDecodeError 的真实文本是 "'utf-8' codec can't decode byte ..."
+    # ——"编码"/"encode" 都匹配不到（codec ≠ encode），所以这条分支此前几乎是
+    # 死的：用户传 GBK 的 .txt 只会看到 unknown 加一串技术细节，
+    # 而"请保存为 UTF-8"的友好文案永远不会出现
+    if any(k in error_str for k in ("编码", "encode", "codec", "decode")):
+        return "encoding"
+    if "empty" in error_str or "no text" in error_str:
+        return "empty"
+    if "connect" in error_str or "timeout" in error_str or "download" in error_str:
+        return "network"
+    return "unknown"
+
+
+def _record_index_error(exc: Exception) -> None:
+    """归类索引错误并写入 session_state（分类规则见 _classify_index_error）。"""
+    code = _classify_index_error(exc)
+    if code == "unknown":
+        # 未识别的错误才带堆栈——用户传错文件属正常使用失误，不该刷 traceback
+        logger.exception("文档索引失败（未识别错误）")
+        st.session_state.index_error_detail = sanitize_error(exc)
+    else:
+        logger.error("文档索引失败（%s）：%s", code, sanitize_error(exc))
+    st.session_state.index_error = code
 
 
 def index_documents_if_needed():
@@ -326,40 +513,8 @@ def index_documents_if_needed():
             st.session_state.docs_indexed = True
             st.session_state.index_error = None
             st.toast(f"✅ 已索引 {service.chunk_count} 个文本块")
-        except (UnicodeDecodeError, ValueError) as e:
-            logger.error("文档索引失败（编码/格式错误）：%s", sanitize_error(e))
-            error_str = str(e).lower()
-            if (
-                "不存在" in error_str
-                or "无法访问" in error_str
-                or "not found" in error_str
-            ):
-                st.session_state.index_error = "missing"
-            elif "加密" in error_str or "encrypt" in error_str or "密码" in error_str:
-                st.session_state.index_error = "pdf_encrypted"
-            elif "扫描" in error_str or "scan" in error_str:
-                st.session_state.index_error = "pdf_scanned"
-            elif "损坏" in error_str or "corrupt" in error_str:
-                st.session_state.index_error = "pdf_corrupted"
-            elif "编码" in error_str or "encode" in error_str:
-                st.session_state.index_error = "encoding"
-            else:
-                st.session_state.index_error = "unknown"
-                st.session_state.index_error_detail = sanitize_error(e)
         except Exception as e:
-            logger.exception("文档索引失败（未知错误）")
-            error_str = str(e).lower()
-            if "empty" in error_str or "no text" in error_str:
-                st.session_state.index_error = "empty"
-            elif (
-                "connect" in error_str
-                or "timeout" in error_str
-                or "download" in error_str
-            ):
-                st.session_state.index_error = "network"
-            else:
-                st.session_state.index_error = "unknown"
-                st.session_state.index_error_detail = sanitize_error(e)
+            _record_index_error(e)
 
 
 def show_index_error():
@@ -368,17 +523,11 @@ def show_index_error():
     if not error_type:
         return
 
-    messages = {
-        "encoding": "文件编码不支持，请确保上传的是 UTF-8 编码的 .txt 文件。",
-        "missing": "文件已被移动或删除，请回到前几步重新选择。",
-        "empty": "文件内容为空，请检查后重新选择。",
-        "network": "首次使用需下载模型（约 400MB），请检查网络连接后重试。",
-        "pdf_encrypted": "PDF 文件已加密，请先解密为普通 PDF 后重新上传。",
-        "pdf_scanned": "PDF 可能是扫描件，无法提取文字。请上传含文本的 PDF 或使用 OCR 工具转换。",
-        "pdf_corrupted": "PDF 文件已损坏或格式异常，请检查后重新上传。",
-        "unknown": f"索引失败：{st.session_state.get('index_error_detail', '未知错误')}",
-    }
-    st.error(messages.get(error_type, messages["unknown"]))
+    template = _INDEX_ERROR_MESSAGES.get(error_type, _INDEX_ERROR_MESSAGES["unknown"])
+    if error_type == "unknown":
+        # 未识别错误才附上原始详情（脱敏后），便于用户/日志定位
+        template += st.session_state.get("index_error_detail", "未知错误")
+    st.error(template)
 
     # 只有 network 类错误值得重试，其他需要用户修复文件
     if error_type == "network":
@@ -475,7 +624,9 @@ def step_1_resume():
                 st.error(f"❌ {error}")
                 st.session_state.resume_path = None
                 st.session_state.resume_name = None
-            else:
+            elif path != st.session_state.resume_path:
+                # 文件真的换了才重置索引状态：Streamlit 每次交互都重跑脚本，
+                # 无条件重置会让建好的索引反复作废、提示反复弹出
                 st.session_state.resume_path = path
                 st.session_state.resume_name = uploaded.name
                 st.session_state.docs_indexed = False
@@ -486,11 +637,12 @@ def step_1_resume():
         if choice and choice != "-- 请选择 --":
             for r in AVAILABLE_RESUMES:
                 if r["label"] == choice:
-                    st.session_state.resume_path = r["path"]
-                    st.session_state.resume_name = choice
-                    st.session_state.docs_indexed = False
+                    if st.session_state.resume_path != r["path"]:
+                        st.session_state.resume_path = r["path"]
+                        st.session_state.resume_name = choice
+                        st.session_state.docs_indexed = False
+                        st.toast(f"✅ 已选择：{choice}")
                     break
-            st.toast(f"✅ 已选择：{choice}")
         elif choice == "-- 请选择 --" and st.session_state.get("resume_path"):
             st.session_state.resume_path = None
             st.session_state.resume_name = None
@@ -528,7 +680,7 @@ def step_2_jd():
                 st.error(f"❌ {error}")
                 st.session_state.jd_path = None
                 st.session_state.jd_name = None
-            else:
+            elif path != st.session_state.jd_path:
                 st.session_state.jd_path = path
                 st.session_state.jd_name = uploaded.name
                 st.session_state.docs_indexed = False
@@ -575,11 +727,12 @@ def step_2_jd():
         if choice and choice != "-- 请选择 --":
             for j in AVAILABLE_JDS:
                 if j["label"] == choice:
-                    st.session_state.jd_path = j["path"]
-                    st.session_state.jd_name = choice
-                    st.session_state.docs_indexed = False
+                    if st.session_state.jd_path != j["path"]:
+                        st.session_state.jd_path = j["path"]
+                        st.session_state.jd_name = choice
+                        st.session_state.docs_indexed = False
+                        st.toast(f"✅ 已选择：{choice}")
                     break
-            st.toast(f"✅ 已选择：{choice}")
         elif choice == "-- 请选择 --" and st.session_state.get("jd_path"):
             st.session_state.jd_path = None
             st.session_state.jd_name = None
@@ -627,8 +780,9 @@ def step_3_user_info():
             st.error(f"❌ {error}")
             st.session_state.user_photo_path = None
         else:
-            st.session_state.user_photo_path = path
-            st.toast(f"✅ 已上传照片：{uploaded_photo.name}")
+            if st.session_state.user_photo_path != path:
+                st.session_state.user_photo_path = path
+                st.toast(f"✅ 已上传照片：{uploaded_photo.name}")
             # 预览
             st.image(uploaded_photo.getvalue(), width=80, caption=uploaded_photo.name)
     elif st.session_state.user_photo_path:
@@ -654,204 +808,137 @@ def step_3_user_info():
 
 
 def step_4_generate_preview():
+    """Step 4 入口：按当前状态分发给三个渲染函数。
+
+    原先是一个 300+ 行、三层嵌套的巨型函数（ruff C901/PLR0912/PLR0915
+    全部指向它），拆成"已完成 / 断点暂停 / 未开始"三个独立渲染函数。
+    """
     st.header("④ 生成预览")
 
-    # ================================================================
-    # 状态 1：已完成（workflow_result 非空）
-    # ================================================================
     if st.session_state.workflow_result is not None:
-        result = st.session_state.workflow_result
-        base = result.get("base_resume", "")
-        customized = result.get("customized_resume", "")
+        _render_generated_result(st.session_state.workflow_result)
+    elif st.session_state.workflow_paused:
+        _render_review_paused()
+    else:
+        _render_generate_start()
 
-        if result.get("_interrupted") is False:
-            st.info("简历已自动生成，未经过人工审核步骤。")
 
-        # 展示提醒（解析失败/降级等）
-        notifications = result.get("notifications", [])
-        if notifications:
-            for note in notifications:
-                st.warning(note)
+def _render_generated_result(result: dict) -> None:
+    """状态 1：已完成（基础简历 + 定制简历都在）。"""
+    base = result.get("base_resume", "")
+    customized = result.get("customized_resume", "")
 
-        # 中间结果（调试用）
-        with st.expander("🔍 中间分析结果"):
-            user = result.get("user_profile")
-            style = result.get("style_profile")
-            jd_reqs = result.get("jd_requirements")
+    if result.get("_interrupted") is False:
+        st.info("简历已自动生成，未经过人工审核步骤。")
 
-            if user:
-                st.write(
-                    f"**解析用户**：{user.name}，{len(user.skills)} 项技能，{len(user.experience)} 段经历"
-                )
-            if style:
-                st.write(f"**风格**：{style.structure[:60]}...")
-            if jd_reqs:
-                st.write(f"**JD**：{jd_reqs.title}，{len(jd_reqs.keywords)} 个关键词")
+    # 展示提醒（解析失败/降级等）
+    notifications = result.get("notifications", [])
+    if notifications:
+        for note in notifications:
+            st.warning(note)
 
-        tab1, tab2 = st.tabs(["🎯 JD 定制简历", "📄 基础简历"])
-        with tab1:
-            st.markdown(customized)
-        with tab2:
-            st.markdown(base)
+    # 中间结果（调试用）
+    with st.expander("🔍 中间分析结果"):
+        user = result.get("user_profile")
+        style = result.get("style_profile")
+        jd_reqs = result.get("jd_requirements")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔄 重新生成", use_container_width=True):
-                _reset_workflow_state()
-                st.rerun()
-        with col2:
-            if st.button("ℹ️ 调整信息", use_container_width=True):
-                _reset_workflow_state()
-                st.session_state.wizard_step = 3
-                st.rerun()
-        return
+        if user:
+            st.write(
+                f"**解析用户**：{user.name}，{len(user.skills)} 项技能，{len(user.experience)} 段经历"
+            )
+        if style:
+            st.write(f"**风格**：{style.structure[:60]}...")
+        if jd_reqs:
+            st.write(f"**JD**：{jd_reqs.title}，{len(jd_reqs.keywords)} 个关键词")
 
-    # ================================================================
-    # 状态 2：断点暂停（workflow_paused 为 True，审核基础简历 + 提醒后继续）
-    # ================================================================
-    if st.session_state.workflow_paused:
-        paused = st.session_state.paused_result
-        if paused is None:
-            # 异常情况：标记为暂停但没有数据，回退到初始状态
-            logger.warning("workflow_paused=True 但 paused_result 为空，回退到初始状态")
-            st.session_state.workflow_paused = False
-            st.session_state.paused_lost = True
+    tab1, tab2 = st.tabs(["🎯 JD 定制简历", "📄 基础简历"])
+    with tab1:
+        st.markdown(customized)
+    with tab2:
+        st.markdown(base)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 重新生成", use_container_width=True):
+            _reset_workflow_state()
+            st.rerun()
+    with col2:
+        if st.button("ℹ️ 调整信息", use_container_width=True):
+            _reset_workflow_state()
+            st.session_state.wizard_step = 3
             st.rerun()
 
-        base_resume = paused.get("base_resume", "")
-        user = paused.get("user_profile")
-        style = paused.get("style_profile")
-        jd_reqs = paused.get("jd_requirements")
-        notifications = paused.get("notifications", [])
 
-        # 展示提醒（check_parsed 在暂停前已执行）
-        if notifications:
-            for note in notifications:
-                st.warning(note)
-
-        st.success("✅ 基础简历已生成，请审核后再继续 JD 定制。")
-
-        # 解析摘要
-        with st.expander("🔍 解析摘要（点击展开）"):
-            if user:
-                st.write(f"**姓名**：{user.name or '（未识别）'}")
-                st.write(
-                    f"**技能**：{', '.join(user.skills) if user.skills else '（未识别）'}"
-                )
-                st.write(f"**经历**：{len(user.experience)} 段")
-            if style:
-                fallback_tag = " ⚠️ 默认风格" if style.is_fallback else ""
-                st.write(f"**风格**：{style.structure[:80]}...{fallback_tag}")
-            if jd_reqs:
-                st.write(f"**目标岗位**：{jd_reqs.title}")
-                st.write(
-                    f"**关键词**：{', '.join(jd_reqs.keywords) if jd_reqs.keywords else '（未提取到）'}"
-                )
-
-        # 基础简历预览
-        st.subheader("📄 基础简历预览")
-        with st.container(border=True):
-            if base_resume.strip():
-                st.markdown(base_resume)
-            else:
-                st.warning("基础简历生成为空，建议在侧边栏补充经验库内容后重新生成。")
-
-        # 操作按钮
-        st.divider()
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button(
-                "✅ 审核通过，继续 JD 定制",
-                type="primary",
-                use_container_width=True,
-                disabled=st.session_state.processing,
-            ):
-                st.session_state.processing = True
-                # ── 优先后端 API：异步提交 + SSE 流式实时展示 ──
-                # 前端中断（切按钮/刷新）不再影响任务执行：任务在后端后台线程
-                # 运行，重进页面/重新点击会复用 task_id 轮询结果而非重复生成
-                api_handled = False
-                try:
-                    result = _customize_via_api()
-                    if result is not None:
-                        api_handled = True
-                        st.session_state.workflow_result = result
-                        st.session_state.workflow_paused = False
-                        st.session_state.paused_result = None
-                        st.rerun()
-                except RuntimeError:
-                    # 后端 404：checkpoint 丢失（服务重启导致），本地同样没有
-                    logger.warning("API 定制失败：checkpoint 不存在", exc_info=True)
-                    st.error(
-                        "工作流状态丢失，无法继续。请点击下方「重新生成」按钮重新开始。"
-                        "这通常是因为服务重启导致缓存被清空。"
-                    )
-                    st.session_state.workflow_paused = False
-                    st.session_state.paused_result = None
-                    st.session_state.processing = False
-                    api_handled = True
-
-                # ── 本地兜底（后端 API 不可用时的保底路径）──
-                if not api_handled:
-                    with st.spinner(
-                        "🤖 AI 正在根据 JD 定制简历... 这可能需要 20-40 秒"
-                    ):
-                        try:
-                            result = resume_workflow(
-                                thread_id=st.session_state.session_id
-                            )
-                            st.session_state.workflow_result = result
-                            st.session_state.workflow_paused = False
-                            st.session_state.paused_result = None
-                            st.rerun()
-                        except RuntimeError:
-                            logger.warning(
-                                "resume_workflow 失败：checkpoint 不存在", exc_info=True
-                            )
-                            st.error(
-                                "工作流状态丢失，无法继续。请点击下方「重新生成」按钮重新开始。"
-                                "这通常是因为服务重启导致缓存被清空。"
-                            )
-                            st.session_state.workflow_paused = False
-                            st.session_state.paused_result = None
-                            st.session_state.processing = False
-                        except Exception as e:
-                            logger.exception("resume_workflow 执行失败")
-                            st.session_state.processing = False
-                            error_str = str(e).lower()
-                            if "timeout" in error_str or "timed out" in error_str:
-                                st.error(
-                                    "请求超时，请检查网络后重试。您可以再次点击「审核通过」按钮继续。"
-                                )
-                            elif "rate limit" in error_str or "too many" in error_str:
-                                st.warning("请求过于频繁，请稍等片刻后重试。")
-                            elif (
-                                "unauthorized" in error_str
-                                or "auth" in error_str
-                                or "api key" in error_str
-                                or "apikey" in error_str
-                            ):
-                                st.error(
-                                    "API 认证失败，请检查 .env 中的 DEEPSEEK_API_KEY 是否正确。"
-                                )
-                            elif (
-                                "connect" in error_str
-                                or "network" in error_str
-                                or "refused" in error_str
-                            ):
-                                st.error("无法连接到 AI 服务，请检查网络连接后重试。")
-                            else:
-                                st.error(f"JD 定制失败：{sanitize_error(e)}")
-        with c2:
-            if st.button("🔄 放弃并重新生成", use_container_width=True):
-                _reset_workflow_state()
-                st.rerun()
-
+def _render_review_paused() -> None:
+    """状态 2：断点暂停——审核基础简历 + 提醒，确认后继续 JD 定制。"""
+    paused = st.session_state.paused_result
+    if paused is None:
+        # 异常情况：标记为暂停但没有数据，回退到初始状态
+        logger.warning("workflow_paused=True 但 paused_result 为空，回退到初始状态")
+        st.session_state.workflow_paused = False
+        st.session_state.paused_lost = True
+        st.rerun()
         return
 
-    # ================================================================
-    # 状态 3：未开始
-    # ================================================================
+    base_resume = paused.get("base_resume", "")
+    user = paused.get("user_profile")
+    style = paused.get("style_profile")
+    jd_reqs = paused.get("jd_requirements")
+    notifications = paused.get("notifications", [])
+
+    # 展示提醒（check_parsed 在暂停前已执行）
+    if notifications:
+        for note in notifications:
+            st.warning(note)
+
+    st.success("✅ 基础简历已生成，请审核后再继续 JD 定制。")
+
+    # 解析摘要
+    with st.expander("🔍 解析摘要（点击展开）"):
+        if user:
+            st.write(f"**姓名**：{user.name or '（未识别）'}")
+            st.write(
+                f"**技能**：{', '.join(user.skills) if user.skills else '（未识别）'}"
+            )
+            st.write(f"**经历**：{len(user.experience)} 段")
+        if style:
+            fallback_tag = " ⚠️ 默认风格" if style.is_fallback else ""
+            st.write(f"**风格**：{style.structure[:80]}...{fallback_tag}")
+        if jd_reqs:
+            st.write(f"**目标岗位**：{jd_reqs.title}")
+            st.write(
+                f"**关键词**：{', '.join(jd_reqs.keywords) if jd_reqs.keywords else '（未提取到）'}"
+            )
+
+    # 基础简历预览
+    st.subheader("📄 基础简历预览")
+    with st.container(border=True):
+        if base_resume.strip():
+            st.markdown(base_resume)
+        else:
+            st.warning("基础简历生成为空，建议在侧边栏补充经验库内容后重新生成。")
+
+    # 操作按钮
+    st.divider()
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button(
+            "✅ 审核通过，继续 JD 定制",
+            type="primary",
+            use_container_width=True,
+            disabled=st.session_state.processing,
+        ):
+            st.session_state.processing = True
+            _run_customize_and_store()
+    with c2:
+        if st.button("🔄 放弃并重新生成", use_container_width=True):
+            _reset_workflow_state()
+            st.rerun()
+
+
+def _render_generate_start() -> None:
+    """状态 3：未开始——确认信息后触发生成。"""
     if st.session_state.paused_lost:
         st.warning("上一次的审核状态已丢失（通常由服务重启导致），请重新生成。")
         st.session_state.paused_lost = False
@@ -878,17 +965,55 @@ def step_4_generate_preview():
         st.session_state.workflow_result = None
         st.session_state.workflow_paused = False
         st.session_state.paused_result = None
+        _run_generate_and_store()
 
-        # 先索引文档
-        index_documents_if_needed()
 
-        if not st.session_state.docs_indexed:
-            show_index_error()
-            st.session_state.processing = False
-            return
+def _show_llm_error(exc: Exception, action: str) -> None:
+    """按错误类型给出可操作的提示（生成/定制两条路径共用）。"""
+    error_str = str(exc).lower()
+    if "timeout" in error_str or "timed out" in error_str:
+        st.error(f"{action}超时，请检查网络后重试。")
+    elif "rate limit" in error_str or "too many" in error_str:
+        st.warning("请求过于频繁，请稍等片刻后重试。")
+    elif any(k in error_str for k in ("unauthorized", "auth", "api key", "apikey")):
+        st.error("API 认证失败，请检查 .env 中的 DEEPSEEK_API_KEY 是否正确。")
+    elif any(k in error_str for k in ("connect", "network", "refused")):
+        st.error("无法连接到 AI 服务，请检查网络连接后重试。")
+    else:
+        st.error(f"{action}失败：{sanitize_error(exc)}")
 
-        # 运行工作流（会在 check_parsed 后暂停）
-        with st.spinner("🤖 AI 正在生成基础简历... 这可能需要 20-40 秒"):
+
+def _run_generate_and_store() -> None:
+    """生成基础简历：优先后端 API（方案 B），后端不可用时回退本地工作流。
+
+    ⚠️ 生成必须与后续定制落在同一进程：checkpoint 存在进程内存里。
+    若生成在 Streamlit 进程、定制却请求后端进程，后端找不到该 thread_id
+    会返回 404，用户看到"工作流状态丢失"——这正是早期版本"审核通过"
+    必然失败的根因。
+    """
+    with st.spinner("🤖 AI 正在生成基础简历... 这可能需要 20-40 秒"):
+        result = None
+        # ── 优先后端 API ──
+        try:
+            result = _generate_via_api(
+                user_text=load_experience_bank(),
+                sample_resume_path=st.session_state.resume_path,
+                jd_path=st.session_state.jd_path,
+                user_supplement=st.session_state.user_supplement_input,
+            )
+            if result is not None:
+                # 采用后端分配的 thread_id，后续定制才找得到同一个 checkpoint
+                st.session_state.session_id = result["thread_id"]
+        except Exception as e:
+            logger.warning("后端 API 生成失败，回退本地执行：%s", sanitize_error(e))
+
+        # ── 本地兜底：索引 + 工作流全部在本地跑 ──
+        if result is None:
+            index_documents_if_needed()
+            if not st.session_state.docs_indexed:
+                show_index_error()
+                st.session_state.processing = False
+                return
             try:
                 result = run_workflow(
                     user_text=load_experience_bank(),
@@ -897,52 +1022,80 @@ def step_4_generate_preview():
                     thread_id=st.session_state.session_id,
                     user_supplement=st.session_state.user_supplement_input,
                 )
-
-                errors = result.get("errors", [])
-                if errors:
-                    st.session_state.processing = False
-                    for err in errors:
-                        st.error(f"❌ {err}")
-                    return
-
-                # 判断是否暂停在断点（由 LangGraph checkpoint 状态决定）
-                if result["_interrupted"]:
-                    # 预期情况：暂停在 check_parsed 之后
-                    st.session_state.paused_result = result
-                    st.session_state.workflow_paused = True
-                else:
-                    # 意外情况：工作流没有暂停直接完成了
-                    logger.warning(
-                        "工作流未在断点暂停，直接完成了（interrupt_after 可能未生效）"
-                    )
-                    st.session_state.workflow_result = result
-                st.session_state.processing = False
-                st.rerun()
             except Exception as e:
                 logger.exception("工作流执行失败")
-                error_str = str(e).lower()
-                if "timeout" in error_str or "timed out" in error_str:
-                    st.error("请求超时，请检查网络后点击【重新生成】重试。")
-                elif "rate limit" in error_str or "too many" in error_str:
-                    st.warning("请求过于频繁，请稍等片刻后重试。")
-                elif (
-                    "unauthorized" in error_str
-                    or "auth" in error_str
-                    or "api key" in error_str
-                    or "apikey" in error_str
-                ):
-                    st.error(
-                        "API 认证失败，请检查 .env 中的 DEEPSEEK_API_KEY 是否正确。"
-                    )
-                elif (
-                    "connect" in error_str
-                    or "network" in error_str
-                    or "refused" in error_str
-                ):
-                    st.error("无法连接到 AI 服务，请检查网络连接后重试。")
-                else:
-                    st.error(f"生成失败：{sanitize_error(e)}")
+                _show_llm_error(e, "生成")
                 st.session_state.processing = False
+                return
+
+        errors = result.get("errors", [])
+        if errors:
+            st.session_state.processing = False
+            for err in errors:
+                st.error(f"❌ {err}")
+            return
+
+        # 判断是否暂停在断点（由 LangGraph checkpoint 状态决定）
+        if result.get("_interrupted"):
+            # 预期情况：暂停在 check_parsed 之后
+            st.session_state.paused_result = result
+            st.session_state.workflow_paused = True
+        else:
+            # 意外情况：工作流没有暂停直接完成了
+            logger.warning(
+                "工作流未在断点暂停，直接完成了（interrupt_after 可能未生效）"
+            )
+            st.session_state.workflow_result = result
+        st.session_state.processing = False
+        st.rerun()
+
+
+def _run_customize_and_store() -> None:
+    """审核通过：优先后端 API 流式定制，任何失败都回退本地恢复。
+
+    后端返回 404（checkpoint 不在后端进程）也走本地回退——本地通常
+    还留着那份 checkpoint，直接恢复即可，不该直接报"状态丢失"。
+    """
+    # ── 优先后端 API：异步提交 + SSE 流式实时展示 ──
+    # 前端中断（切按钮/刷新）不影响任务执行：任务在后端后台线程运行，
+    # 重进页面/重新点击会复用 task_id 轮询结果而非重复生成
+    result = _customize_via_api()
+    if result is not None:
+        _store_customize_result(result)
+        return
+
+    # ── 本地兜底（后端不可用 / checkpoint 只在本地）──
+    with st.spinner("🤖 AI 正在根据 JD 定制简历... 这可能需要 20-40 秒"):
+        # 本地定制要用检索，先确保索引就绪（已索引时立即返回）
+        index_documents_if_needed()
+        try:
+            result = resume_workflow(thread_id=st.session_state.session_id)
+        except RuntimeError:
+            # 本地也没有 checkpoint = 真的丢了（服务重启清空了内存）
+            logger.warning("resume_workflow 失败：checkpoint 不存在", exc_info=True)
+            st.error(
+                "工作流状态丢失，无法继续。请点击下方「重新生成」按钮重新开始。"
+                "这通常是因为服务重启导致缓存被清空。"
+            )
+            st.session_state.workflow_paused = False
+            st.session_state.paused_result = None
+            st.session_state.processing = False
+            return
+        except Exception as e:
+            logger.exception("resume_workflow 执行失败")
+            _show_llm_error(e, "JD 定制")
+            st.session_state.processing = False
+            return
+    _store_customize_result(result)
+
+
+def _store_customize_result(result: dict) -> None:
+    """定制完成：写入 session_state 并刷新页面。"""
+    st.session_state.workflow_result = result
+    st.session_state.workflow_paused = False
+    st.session_state.paused_result = None
+    st.session_state.processing = False
+    st.rerun()
 
 
 # ============================================================
@@ -950,56 +1103,40 @@ def step_4_generate_preview():
 # ============================================================
 
 
+# 导出缓存的四个槽位：(session_state 键, 日志用名, 内容来源, 导出函数)。
+# 四个槽位共用同一套三态写入规则——None（未生成）/ ("ok", bytes) / ("error", 消息)，
+# 由 _render_download_buttons 消费。原先四处各写 9 行，规则一改要改四遍。
+# 导出函数一律用关键字传参：PDF 与 Word 的形参顺序相反（见 markdown_to_*_bytes）
+_EXPORT_SLOTS = (
+    ("export_customized_pdf", "定制简历 PDF", "customized", markdown_to_pdf_bytes),
+    ("export_customized_docx", "定制简历 Word", "customized", markdown_to_docx_bytes),
+    ("export_base_pdf", "基础简历 PDF", "base", markdown_to_pdf_bytes),
+    ("export_base_docx", "基础简历 Word", "base", markdown_to_docx_bytes),
+)
+
+
 def _ensure_export_cache(result: dict):
     """确保导出 bytes 已缓存到 session_state，避免每次 rerun 重新生成。"""
-    base = result.get("base_resume", "")
-    customized = result.get("customized_resume", "")
-
+    texts = {
+        "base": result.get("base_resume", ""),
+        "customized": result.get("customized_resume", ""),
+    }
     photo = st.session_state.get("user_photo_path")
     jd_reqs = result.get("jd_requirements")
     job_target = (
         jd_reqs.title if jd_reqs and jd_reqs.title else ""
     )  # 与 step_5 的 jd_title 守卫一致
 
-    if st.session_state.export_customized_pdf is None and customized:
-        pdf_bytes, pdf_err = markdown_to_pdf_bytes(
-            customized, photo_path=photo, job_target=job_target
-        )
-        if pdf_err:
-            logger.error("定制简历 PDF 导出失败：%s", pdf_err)
-            st.session_state.export_customized_pdf = ("error", pdf_err)
+    for key, label, source, exporter in _EXPORT_SLOTS:
+        text = texts[source]
+        if st.session_state.get(key) is not None or not text:
+            continue  # 已生成过 / 内容为空 → 跳过
+        data, err = exporter(text, photo_path=photo, job_target=job_target)
+        if err:
+            logger.error("%s 导出失败：%s", label, err)
+            st.session_state[key] = ("error", err)
         else:
-            st.session_state.export_customized_pdf = ("ok", pdf_bytes)
-
-    if st.session_state.export_customized_docx is None and customized:
-        docx_bytes, docx_err = markdown_to_docx_bytes(
-            customized, job_target=job_target, photo_path=photo
-        )
-        if docx_err:
-            logger.error("定制简历 Word 导出失败：%s", docx_err)
-            st.session_state.export_customized_docx = ("error", docx_err)
-        else:
-            st.session_state.export_customized_docx = ("ok", docx_bytes)
-
-    if st.session_state.export_base_pdf is None and base:
-        pdf_bytes, pdf_err = markdown_to_pdf_bytes(
-            base, photo_path=photo, job_target=job_target
-        )
-        if pdf_err:
-            logger.error("基础简历 PDF 导出失败：%s", pdf_err)
-            st.session_state.export_base_pdf = ("error", pdf_err)
-        else:
-            st.session_state.export_base_pdf = ("ok", pdf_bytes)
-
-    if st.session_state.export_base_docx is None and base:
-        docx_bytes, docx_err = markdown_to_docx_bytes(
-            base, job_target=job_target, photo_path=photo
-        )
-        if docx_err:
-            logger.error("基础简历 Word 导出失败：%s", docx_err)
-            st.session_state.export_base_docx = ("error", docx_err)
-        else:
-            st.session_state.export_base_docx = ("ok", docx_bytes)
+            st.session_state[key] = ("ok", data)
 
 
 def _render_download_buttons(
@@ -1215,15 +1352,10 @@ def render_sidebar():
                         else:
                             st.warning("⚠️ " + validation_msg)
                     except Exception as e:
-                        error_str = str(e).lower()
-                        if "timeout" in error_str or "timed out" in error_str:
-                            st.error("AI 提取超时，请检查网络后重试。")
-                        elif "rate limit" in error_str or "too many" in error_str:
-                            st.warning("请求过于频繁，请稍等片刻后重试。")
-                        elif "connect" in error_str or "network" in error_str:
-                            st.error("无法连接到 AI 服务，请检查网络连接。")
-                        else:
-                            st.error(f"提取失败：{sanitize_error(e)}")
+                        # 复用统一的分类器：此处曾有一份独立实现，漏了"认证失败"
+                        # 分支——API key 错误会掉进"无法连接"的兜底文案，指错方向
+                        logger.exception("经验库 AI 提取失败")
+                        _show_llm_error(e, "AI 提取")
 
         # 确认追加（用 st.text 避免溢出）
         if st.session_state.ai_extract_result:
@@ -1272,7 +1404,9 @@ def render_sidebar():
             f"{'✅' if jd_ok else '❌'} JD：{st.session_state.jd_name or '未选择'}"
         )
         st.caption(f"{'✅' if st.session_state.docs_indexed else '⏳'} 文档索引")
-        if st.session_state.workflow_result:
+        # 判据与其余三处读者保持一致（validate_current_step / Step4 分发 /
+        # Step5 守卫都用 is not None）——真值判断会把空 dict 当成"没有结果"
+        if st.session_state.workflow_result is not None:
             cr = st.session_state.workflow_result.get("customized_resume", "")
             st.caption(f"✅ 简历已生成 ({len(cr)} 字符)")
 
