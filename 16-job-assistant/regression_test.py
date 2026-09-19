@@ -835,14 +835,14 @@ def test_interview_history_single_limit() -> None:
 # ============================================================
 
 
-def test_build_workflow_no_deadlock() -> None:
+def test_get_workflow_no_deadlock() -> None:
     """在独立线程里构建工作流，超时即判定死锁。
 
-    build_workflow 持 _init_lock 后又调 get_checkpointer（同一把不可重入的锁）
+    get_workflow 持 _init_lock 后又调 get_checkpointer（同一把不可重入的锁）
     曾导致整个工作流永久卡死——这个用例就是防止它回来。
     """
     print("\n" + "─" * 60)
-    print("[附] 惰性单例：build_workflow 不得死锁")
+    print("[附] 惰性单例：get_workflow 不得死锁")
     print("─" * 60)
 
     workflow._compiled_graph = None  # 强制走一次完整的惰性构建路径
@@ -851,7 +851,7 @@ def test_build_workflow_no_deadlock() -> None:
 
     def _build() -> None:
         try:
-            holder["graph"] = workflow.build_workflow()
+            holder["graph"] = workflow.get_workflow()
         except Exception as exc:  # 记录后由断言统一判定
             holder["error"] = exc
         finally:
@@ -862,7 +862,7 @@ def test_build_workflow_no_deadlock() -> None:
     finished = done.wait(timeout=30)
 
     check(
-        "build_workflow 30 秒内返回（不死锁）",
+        "get_workflow 30 秒内返回（不死锁）",
         finished,
         "超时未返回——锁被嵌套获取或循环等待",
     )
@@ -870,7 +870,7 @@ def test_build_workflow_no_deadlock() -> None:
     check("返回已编译的图", holder.get("graph") is not None)
     check(
         "二次调用返回同一实例（单例生效）",
-        workflow.build_workflow() is holder.get("graph"),
+        workflow.get_workflow() is holder.get("graph"),
     )
 
 
@@ -903,7 +903,7 @@ def main() -> None:
     test_interview_history_single_limit()
     # 死锁用例必须放在最后：一旦它真死锁，守护线程会一直持有 _init_lock，
     # 后续任何 get_checkpointer() 调用都会跟着阻塞
-    test_build_workflow_no_deadlock()
+    test_get_workflow_no_deadlock()
 
     print("\n" + "=" * 60)
     print("  验证清单")

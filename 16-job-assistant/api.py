@@ -48,7 +48,7 @@ from core import (
 from exporters import markdown_to_docx_bytes, markdown_to_pdf_bytes
 from models import JDRequirements, UserProfile, WorkExperience
 from resume_engine import stream_customize_for_jd
-from workflow import build_workflow, resume_workflow, run_workflow
+from workflow import get_workflow, resume_workflow, run_workflow
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -466,7 +466,7 @@ def _load_customize_context(thread_id: str) -> _CustomizeContext | None:
       的 checkpoint 会让 POST 返回 200（任务已启动），随后 SSE 才报错。
     """
     config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-    state: StateSnapshot | None = build_workflow().get_state(config)
+    state: StateSnapshot | None = get_workflow().get_state(config)
     values = state.values if state else {}
     base_resume = values.get("base_resume", "")
     jd_reqs = values.get("jd_requirements")

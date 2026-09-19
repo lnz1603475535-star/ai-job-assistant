@@ -266,7 +266,7 @@ def customize_for_jd(
         token 用量只在调用成功时提取（重试失败的尝试无 API 响应对象，返回 {}）。
     """
     max_attempts = 2
-    agent = _build_customize_agent()
+    agent = _get_customize_agent()
     user_message = _build_customize_messages(
         base_resume, jd_reqs, notifications, user_supplement
     )
@@ -316,7 +316,7 @@ def customize_for_jd(
     return base_resume, {}, True
 
 
-def _build_customize_agent():
+def _get_customize_agent():
     """获取 JD 定制 Agent（create_agent v1.0，返回 langgraph 图，支持流式）。
 
     同步路径（customize_for_jd）与流式路径（stream_customize_for_jd）共用，
@@ -395,7 +395,7 @@ def stream_customize_for_jd(
           那属于过程性内容、不在最终简历里，流式时直接丢弃，
           否则用户看到的流与最终落盘的简历对不上
     """
-    agent = _build_customize_agent()
+    agent = _get_customize_agent()
     user_message = _build_customize_messages(
         base_resume, jd_reqs, notifications, user_supplement
     )
