@@ -386,6 +386,11 @@ def stream_customize_for_jd(
         ("token", 文本块)  —— LLM 逐步生成的 token（拼起来即定制简历）
         ("done", 结果 dict) —— {"customized_resume", "token_usage", "failed"}
 
+    契约：**必定以 ("done", 结果) 结束**；出错则抛异常（不在这里吞）。
+    调用方 api.py 的 _run_customize_task 依赖这一点：它只在收到 done 时才
+    组装结果，异常则由它自己的 except 兜底成降级 done。所以**函数体里不能加
+    提前 return**——那会让调用方收不到 done，只剩哨兵，结果丢失。
+
     与 customize_for_jd 的差异：
         - 无重试——流式输出中途重跑体验差，失败时由调用方捕获异常后降级
           （同步端点保留完整重试逻辑，两条路径各司其职）
