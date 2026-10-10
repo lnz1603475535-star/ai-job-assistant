@@ -173,10 +173,18 @@ load_dotenv(find_dotenv())
 # ============================================================
 
 llm = ChatOpenAI(
-    model="deepseek-v4-flash",
+    model="deepseek-flash",
     api_key=os.getenv("DEEPSEEK_API_KEY"),  # pyright: ignore[reportArgumentType]——stub 过严，运行时接受 str
     base_url=os.getenv("DEEPSEEK_BASE_URL"),
     temperature=0.3,
+    # 超时必须显式设置：openai SDK 默认 read=600s、max_retries=2，最坏一次调用
+    # 可挂约 30 分钟，期间一直占着 asyncio.to_thread 的槽位（池子仅 20 个，
+    # 与 run_workflow / 导出 / 面试共用）。120s 有实测依据——最慢的单次调用
+    # 是 generate_base 57.0s / customize 55.0s。
+    # max_retries 降到 1：SDK 自带重试会与业务层的退避重试（customize_for_jd）
+    # 相乘，保留 1 次作为网络抖动兜底即可。
+    timeout=120.0,
+    max_retries=1,
 )
 
 # ============================================================
