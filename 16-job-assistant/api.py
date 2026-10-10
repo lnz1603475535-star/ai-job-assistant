@@ -47,6 +47,7 @@ from core import (
 )
 from exporters import markdown_to_docx_bytes, markdown_to_pdf_bytes
 from models import JDRequirements, UserProfile, WorkExperience
+from prompts import INTERVIEW_SYSTEM_PROMPT
 from resume_engine import stream_customize_for_jd
 from workflow import get_workflow, resume_workflow, run_workflow
 
@@ -676,16 +677,6 @@ def _append_interview_turns(thread_id: str, question: str, answer: str) -> int:
         while len(_interviews) > _MAX_INTERVIEW_THREADS:
             _interviews.popitem(last=False)
     return turns
-
-INTERVIEW_SYSTEM_PROMPT = """你是模拟面试官，正在根据候选人的简历进行技术面试。
-
-职责：
-1. 基于简历内容提问：追问技术细节、项目难点、量化结果
-2. 点评候选人的回答：肯定亮点、指出不足、给出改进建议
-3. 一题一题来，每轮聚焦一个点，不要一次问多个问题
-
-回答风格：像真实面试官，先简短回应候选人的回答，再抛出下一个问题。"""
-
 
 @app.post("/api/interview/chat")
 async def interview_chat(req: InterviewChatRequest) -> dict:
