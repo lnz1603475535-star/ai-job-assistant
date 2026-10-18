@@ -44,6 +44,7 @@
 4. **他会追问 why**：每个技术决策都要能讲出不选别的原因，否则就是"教程教的"，面试不加分。
 5. **日期只用硬证据**：跨天对话里不要用"今天/明天"，拿不到证据就写区间（如 08-07~08-14）或"约"，**绝不猜**。
 6. 全中文交流。
+7. **他的学习节奏**：看代码 → 抄一遍（逐行加注释）→ 改一个东西跑通 → 伪代码讲流程 → 独立写。讲解和验收按这个节奏配合。
 
 ---
 
@@ -99,6 +100,7 @@ validate_inputs → extract_style → extract_jd → parse_user → generate_bas
 - `notifications: Annotated[list[str], operator.add]`：节点追加提醒，**两个消费者**——Agent（调整策略）和 UI（`st.warning`）。只接一头是历史踩坑（§8 #12）。
 - 断点：`interrupt_after=["check_parsed"]`（2026-07-17 从 `generate_base` 前移，让用户看到完整解析提醒再审核）；恢复必须先 `get_state` 确认 checkpoint 存在，再 `invoke(None)`，异常透传不包裹。
 - 单例统一叫 `get_*`（`get_checkpointer` / `get_embeddings` / `get_workflow` / `get_retrieval_service`）：`build_*` 暗示"每次新建"，会让人误判性能特征。
+- Step 3 **不是必填个人信息**，而是可选的方向指引（侧重点 / 弱化项 / 岗位看法）；技能与经历由经验库提供，`user_supplement` 字段一路传到 `customize`。
 
 ### 4.3 检索（混合 + 融合）
 - 双路召回 + **RRF 融合**：`score = 1/(60 + FAISS排名) + 1/(60 + BM25排名)`。
@@ -136,6 +138,7 @@ generate 也走 `POST /api/resume/generate`，用后端返回的 `thread_id`；�
 - **日志**：`RotatingFileHandler`（10MB×3）+ 双通道分级（控制台 WARNING+ / 文件 DEBUG+）+ 定位信息 + 第三方库静音 + `SensitiveFilter` 脱敏（API key / 手机号 / 邮箱）。入口在 `app.py main()` 与 `terminal_test.py`，新模块只 `logging.getLogger(__name__)`。
 - **LLM 客户端**：全项目只在 `core.py` 构造一次，`timeout=120.0` + `max_retries=1`。SDK 默认 read=600s×重试 2 次 ≈ 最坏挂 30 分钟，且全程占一个线程池槽位（§8 #28）。
 - **内存治理**：checkpoint LRU 50 / 定制任务注册表 LRU 20 / 面试会话 LRU 50，三处原本都"永不回收"。
+- **量化三件套**（改工作流时不要拆掉）：`eval_data/` 评测集目录（命名与记录规则见其 README）、`_timed_node` 节点耗时包装（日志标记 `[节点耗时]`，grep 可统计）、条件路由日志（`[路由]`，错误路由 WARNING）。
 
 ---
 
@@ -194,6 +197,10 @@ python regression_test.py    # 63 断言，零 LLM，秒级
 - `terminal_test.py` 跟 `app.py` 走相同路径；**只保留当前架构的测试，删旧 Round 残留**。
 - 改了检索/预算/导出，先跑 regression_test。
 - UI 相关改动 terminal_test 覆盖不到，必须 AppTest 或人工点验。
+- **改了函数签名或返回值：grep 所有调用方**确认没有漏改。
+- **改完走一遍代码审查**（缺陷 / 结构 / 重复 / 类型四个镜头），不是只看测试绿。
+- **改了检索、生成或文件格式：在 RAGAS 评测表里追加一条**（ContextRecall / Faithfulness / AnswerCorrectness，覆盖按需检索路径）。
+- **发现可测数据当场记到 §10**，别等回头补。
 
 ### 6.5 提交
 - **改完不自动 commit**，等用户确认。
@@ -217,6 +224,7 @@ python regression_test.py    # 63 断言，零 LLM，秒级
 - 不要为方便测试而让某条分支长期不被覆盖——那是给 bug 上锁。
 - 不要写"这次先这样，回头再补"的错误处理。
 - 不要在没验证真实触发路径前就断言"这里有 bug"（曾误报 2 条）。
+- 不要另起炉灶做新项目——新知识一律升级到这一个项目里（这是路线图的第 1 条原则）。
 
 ---
 
@@ -304,6 +312,22 @@ PDF/Word 排版细节优化（顶栏/间距/字体，功能已闭环）· mypy�
 
 ### 测试
 `terminal_test` 14/14 · `api_test` 20/20 · `regression_test` 63 断言（零 LLM，秒级）· `ui_test` 19 断言（AppTest）。
+
+### 计划外交付（面试题"你做过哪些超出需求的优化"）
+- **检索 / 文档**：JD 输入从链接抓取改为粘贴文本（SPA 站反爬不可靠）；Word/Markdown 上传；切分 `chunk_size` 300→500、`overlap` 50→100，`normalize_text` 去掉 PDF 硬换行；上传文件指纹去重。
+- **按需检索**：JD 驱动 + RRF 的 top-10 经验提取，token 恒定（见 §4.4）。
+- **可靠性**：日志系统（轮转 + 脱敏 + 双通道）；5 个引擎函数错误处理统一；MemorySaver 单例；notifications 双消费者；指数退避重试。
+- **架构修正**：方案 B 生成/定制同进程（§4.7）；SSE 改 `queue.Queue` 方案甲 + 15 秒心跳；三处 LRU 上限。
+- **导出**：PDF 照片嵌入（25×35mm）、统一排版（深蓝顶栏 + 色块标题）、求职意向自动提取、PDF/Word 共用行解析器。
+- **测试**：`regression_test.py`（63 断言，零 LLM）+ `ui_test.py`（AppTest 无头跑 app.py），补上 app.py 零覆盖的窟窿。
+- **API 质量**：响应键精选（不回显经验库与服务器临时路径）、面试轮次单常量上限、导出改关键字传参、补返回类型标注。
+
+### 市场对标（决定做什么才值钱）
+- **硬门槛**：Python 精通（FastAPI / 异步 / SSE）、LangChain / LangGraph、RAG 全链路、一个真正上线的项目。
+- **高频要求**：模型微调（LoRA / SFT）、数据库设计、Docker / K8s、消息队列、CI/CD + 监控。
+- **加分项**：多模态、模型服务化（vLLM / Ollama）、Langfuse 可观测性、开源贡献。
+- **判断**：基础 RAG 已是门槛，80% 简历同质化；技术深度在前 15–20%，场景（简历生成）本身是差异化。简历四档：堆名词 30 → 做了什么 50 → 量化结果 80 → 选型理由 100。
+- **薪资参考（一线）**：实习 7K–20K；社招 1–3 年 16K–40K。
 
 ---
 
